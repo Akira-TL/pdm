@@ -14,8 +14,7 @@ import time
 import threading
 import requests
 from urllib.parse import urlparse, unquote
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import argparse
 import logging
 
@@ -102,9 +101,10 @@ class DownloadThread:
         
         while retry_count < self.config.max_retries and not self.completed:
             try:
-                # 设置Range请求头
+                # 设置Range请求头（仅当有范围时）
                 range_header = self.headers.copy()
-                range_header['Range'] = f'bytes={self.current_pos}-{self.end}'
+                if self.end > 0:  # 支持Range的多线程下载
+                    range_header['Range'] = f'bytes={self.current_pos}-{self.end}'
                 
                 # 发送HTTP请求
                 response = requests.get(
@@ -135,12 +135,14 @@ class DownloadThread:
                                 self.downloaded += chunk_len
                                 self.calculate_speed()
                             
-                            # 检查是否完成
-                            if self.current_pos > self.end:
+                            # 检查是否完成（仅当有范围限制时）
+                            if self.end > 0 and self.current_pos > self.end:
                                 break
                 
                 # 下载完成
-                if self.current_pos >= self.end:
+                # 对于单线程下载（end=0），当response完成时表示下载完成
+                # 对于多线程下载（end>0），当到达结束位置时表示下载完成
+                if self.end == 0 or self.current_pos >= self.end:
                     self.completed = True
                     logging.info(f"线程 {self.thread_id}: 下载完成")
                     break
