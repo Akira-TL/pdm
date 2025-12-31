@@ -8,6 +8,7 @@
 @版本    :1.0
 """
 
+import argparse
 from glob import glob
 import hashlib
 import json
@@ -51,8 +52,7 @@ logger.add(
 class PDManager:
     def __init__(
         self,
-        workers: int = 4,
-        thread: int = 1,
+        threads: int = 4,
         timeout: int = 10,
         retry: int = 3,
         log_path: str = sys.stdout,
@@ -62,11 +62,9 @@ class PDManager:
         continue_download: bool = False,
         input_file: str = None,
         max_concurrent_downloads: int = 5,
-        #  force_sequential:bool=False,
-        min_split_size: str = "10M",
+        min_split_size: str = "20M",
     ):
-        self.workers = workers
-        self.thread = thread
+        self.threads = threads
         self.timeout = timeout
         self.retry = retry
         self.log_path = log_path
@@ -75,14 +73,11 @@ class PDManager:
         # self.check_integrity = check_integrity
         self.continue_download = continue_download
         self.input_file = input_file
-        self.max_concurrent_downloads = max_concurrent_downloads
-        # self.force_sequential = force_sequential
+        self.max_concurrent_downloads = min(32, max(1, max_concurrent_downloads))
         self.min_split_size = self.parse_size(min_split_size)
 
         self.dict_lock = asyncio.Lock()
-        self.urls: dict[dict] = (
-            {}
-        )  # url: {md5: str, filename: str,dir_path: str,tmp_path: str}
+        self.urls: dict = {}  # url:FileDownloader
         self.progress = Progress(
             TextColumn("[bold blue]{task.description}"),
             BarColumn(),
@@ -111,7 +106,14 @@ class PDManager:
 
     class FileDownloader:
         def __init__(
-            self, parent, url, filepath, filename: str = None, md5=None, pdm_tmp=None
+            self,
+            parent,
+            url,
+            filepath,
+            filename: str = None,
+            md5=None,
+            pdm_tmp=None,
+            log_path=None,
         ):
             self.parent: PDManager = parent
             self.url = url
@@ -123,6 +125,7 @@ class PDManager:
             self.chunk_root: "PDManager.FileDownloader.Chunk" | None = None
             self.lock = asyncio.Lock()
             self.header_info = None
+            self.log_path = log_path
             # self.task = self.parent.progress.add_task(description=self.url)
 
         def __str__(self):
@@ -552,22 +555,22 @@ class PDManager:
                             self.next = new_chunk
                 return self
 
-    def add_url_list(self, url_list: list[dict]):
-        if url_list:
-            if type(url_list[0]) == dict:
-                for d in url_list:
-                    self.add_url(
-                        d.get("url"),
-                        md5=d.get("md5"),
-                        file_name=d.get("filename"),
-                        dir_path=d.get("dir_path", os.getcwd()),
-                        log_path=d.get("log_path", os.getcwd()),
-                    )
-            else:
-                for url in url_list:
-                    self.add_url(url)
+    def add_urls(self, url_list: dict | list[str]):
+        if type(url_list) == dict:
+            for url, v in url_list.items():
+                assert type(v) == dict
+                self.append(
+                    url,
+                    md5=v.get("md5"),
+                    file_name=v.get("file_name"),
+                    dir_path=v.get("dir_path", os.getcwd()),
+                    log_path=v.get("log_path", os.getcwd()),
+                )
+        else:
+            for url in url_list:
+                self.append(url)
 
-    def add_url(
+    def append(
         self,
         url: str,
         md5: str = None,
@@ -575,33 +578,22 @@ class PDManager:
         dir_path: str = os.getcwd(),
         log_path: str = os.getcwd(),
     ):
-        self.urls[url] = {
-            "md5": md5,
-            "filename": file_name,
-            "dir_path": dir_path,
-            "log_path": log_path,
-        }
+        self.urls[url] = PDManager.FileDownloader(
+            self, url, dir_path, filename=file_name, md5=md5, log_path=log_path
+        )
 
-    def del_url(self, url: str):
+    def pop(self, url: str):
         self.urls.pop(url, None)
 
     async def start_download(self):
         downloaders = []
         self.progress.start()
         while self.urls:
-            for url, info in self.urls.items():
-                if len(downloaders) < self.workers:
+            for url, download_entity in self.urls.items():
+                assert isinstance(download_entity, PDManager.FileDownloader)
+                if len(downloaders) < self.threads:
                     downloaders.append(
-                        asyncio.create_task(
-                            PDManager.FileDownloader(
-                                self,
-                                url,
-                                info.get("dir_path"),
-                                info.get("filename"),
-                                info.get("md5"),
-                                info.get("tmp_path"),
-                            ).start_download()
-                        )
+                        asyncio.create_task(download_entity.start_download())
                     )
                 else:
                     done, pending = await asyncio.wait(
@@ -617,41 +609,127 @@ class PDManager:
                             print(f"任务异常: {exc}")  # 或使用 logging 记录
                         downloaders.remove(d)
                     downloaders.append(
-                        asyncio.create_task(
-                            PDManager.FileDownloader(
-                                self,
-                                url,
-                                info.get("dir_path"),
-                                info.get("filename"),
-                                info.get("md5"),
-                                info.get("tmp_path"),
-                            ).start_download()
-                        )
+                        asyncio.create_task(download_entity.start_download())
                     )
             await asyncio.gather(*downloaders)
         self.progress.stop()
 
 
 if __name__ == "__main__":
-    url = "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.3.0/sratoolkit.3.3.0-ubuntu64.tar.gz"
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version="pdm version 0.1.0",
+        help="Print the version number and exit.",
+    )
+    parser.add_argument(
+        "-l",
+        "--log",
+        type=str,
+        default=os.path.join(os.getcwd(), "pdm", "pdm.log"),
+        help="The file name of the log file. If '-' is specified, log is written to stdout.",
+    )
+    parser.add_argument(
+        "-d",
+        "--dir",
+        type=str,
+        default=os.path.join(os.getcwd(), "pdm"),
+        help="The directory to store the downloaded file.",
+    )
+    parser.add_argument(
+        "-o",
+        "--out",
+        type=str,
+        default=None,
+        help="The file name of the downloaded file. It is always relative to the directory given in -d option. When the -Z option is used, this option will be ignored.",
+    )
+    parser.add_argument(
+        "-s",
+        "--split",
+        type=int,
+        default=5,
+        help="Download a file using N connections. If more than N URIs are given, first N URIs are used and remaining URLs are used for backup. If less than N URIs are given, those URLs are used more than once so that N connections total are made simultaneously. See also the --min-split-size option.",
+    )
+    parser.add_argument(
+        "-V",
+        "--check-integrity",
+        action="store_true",
+        help="Check file integrity by validating piece hashes or a hash of the entire file. When piece hashes are provided, pdm can detect damaged portions and re-download them. When only a full-file hash is provided, the check is performed after the file appears to be fully downloaded; on mismatch, the file will be re-downloaded.",
+    )
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_download",
+        action="store_true",
+        help="Continue downloading a partially downloaded file.",
+    )
+    parser.add_argument(
+        "-i",
+        "--input-file",
+        type=str,
+        default=None,
+        help="Downloads URIs found in FILE. You can specify multiple URIs for a single entity: separate URIs on a single line using the TAB character. Reads input from stdin when '-' is specified. Additionally, options can be specified after each line of URI. This optional line must start with one or more white spaces and have one option per single line. See INPUT FILE section of man page for details. See also --deferred-input option.",
+    )
+    parser.add_argument(
+        "-j",
+        "--max-concurrent-downloads",
+        type=int,
+        default=5,
+        help="Set maximum number of parallel downloads for each URL or task.",
+    )
+    parser.add_argument(
+        "-Z",
+        "--force-sequential",
+        action="store_true",
+        help="Fetch URIs in the command-line sequentially and download each URI in a separate session, like usual command-line download utilities.",
+    )
+    parser.add_argument(
+        "-k",
+        "--min-split-size",
+        type=str,
+        default="20M",
+        help="pdm will not split ranges smaller than 2*SIZE bytes. For example, for a 20MiB file: if SIZE is 10M, pdm can split into two ranges and use 2 sources (if --split >= 2). If SIZE is 15M, since 2*15M > 20MiB, pdm will not split the file and downloads using 1 source. You can append K or M (1K = 1024, 1M = 1024K).",
+    )
+    parser.add_argument(
+        "--tmp",
+        type=str,
+        default=None,
+        help="The temporary directory to store the downloading chunks.",
+    )
+    parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=4,
+        help="The number of threads to use for downloading.",
+    )
+    parser.add_argument(
+        "url",
+        type=str,
+        nargs="*",
+        default=None,
+        help="The URL to download.",
+    )  # 可以接受多个url参数
 
-    # fd = PDManager.FileDownloader(
-    #     PDManager(max_concurrent_downloads=1, continue_download=True),
-    #     url=url,
-    #     filepath=os.getcwd(),
-    #     filename=None,
-    #     md5=None,
-    #     pdm_tmp=None,
-    # )
-
-    # fd.start_download()
-    pdm = PDManager(max_concurrent_downloads=32, continue_download=True)
-    pdm.add_url_list([url])
-    asyncio.run(pdm.start_download())
-    # with Progress(console=console) as progress:
-    #     task1 = progress.add_task("[red]Downloading...", total=100)
-    #     for i in range(100):
-    #         progress.update(task1, advance=1)
-    #         import time
-
-    #         time.sleep(0.1)
+    args = parser.parse_args()
+    # url = "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.3.0/sratoolkit.3.3.0-ubuntu64.tar.gz"
+    # pdm = PDManager(max_concurrent_downloads=32, continue_download=True)
+    # pdm.add_url_list([url])
+    # asyncio.run(pdm.start_download())
+    pdm = PDManager(
+        threads=args.threads,
+        split=args.split,
+        continue_download=args.continue_download,
+        input_file=args.input_file,
+        max_concurrent_downloads=args.max_concurrent_downloads,
+        min_split_size=args.min_split_size,
+    )
+    if args.url:
+        pdm.add_urls(
+            args.url,
+            file_name=args.out,
+            dir_path=args.dir,
+            log_path=args.log,
+        )
