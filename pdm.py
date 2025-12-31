@@ -36,31 +36,31 @@ from rich.progress import (
 )
 from rich.text import Text
 
-console = Console()
+# console = Console()
 from yarl import URL
 import re
 import asyncio
 
-logger = Logger(
-    core=Core(),
-    exception=None,
-    depth=0,
-    record=False,
-    lazy=False,
-    colors=False,
-    raw=False,
-    capture=True,
-    patchers=[],
-    extra={},
-)
-logger.remove()
-logger.add(
-    lambda msg: console.print(Text.from_ansi(str(msg)), end="\n"),
-    level="DEBUG",
-    diagnose=True,
-    colorize=True,
-    format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
-)
+# logger = Logger(
+#     core=Core(),
+#     exception=None,
+#     depth=0,
+#     record=False,
+#     lazy=False,
+#     colors=False,
+#     raw=False,
+#     capture=True,
+#     patchers=[],
+#     extra={},
+# )
+# logger.remove()
+# logger.add(
+#     lambda msg: console.print(Text.from_ansi(str(msg)), end="\n"),
+#     level="DEBUG",
+#     diagnose=True,
+#     colorize=True,
+#     format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
+# )
 
 
 class PDManager:
@@ -104,6 +104,7 @@ class PDManager:
 
         self._dict_lock = asyncio.Lock()
         self._urls: dict = {}  # url:FileDownloader
+        self._console = Console()
         self._progress = Progress(
             TextColumn("[bold blue]{task.description}"),
             BarColumn(),
@@ -111,7 +112,7 @@ class PDManager:
             TransferSpeedColumn(),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
-            console=console,
+            console=self._console,
         )
         self.parse_config()
 
@@ -129,7 +130,7 @@ class PDManager:
     def parse_config(self):
         self._logger.remove()
         self._logger.add(
-            lambda msg: console.print(Text.from_ansi(str(msg)), end="\n"),
+            lambda msg: self._console.print(Text.from_ansi(str(msg)), end="\n"),
             level="DEBUG" if self.debug else "INFO",
             diagnose=True,
             colorize=True,
@@ -138,7 +139,7 @@ class PDManager:
         if isinstance(self.log_path, str):
             self._logger.add(
                 self.log_path,
-                level="INFO" if not self.debug else "DEBUG",
+                level="DEBUG" if self.debug else "INFO",
                 diagnose=True,
                 colorize=True,
                 format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
@@ -193,7 +194,58 @@ class PDManager:
             self.lock = asyncio.Lock()
             self.header_info = None
             self.log_path = log_path
-            # self.task = self.parent.progress.add_task(description=self.url)
+            self._logger = Logger(
+                core=Core(),
+                exception=None,
+                depth=0,
+                record=False,
+                lazy=False,
+                colors=False,
+                raw=False,
+                capture=True,
+                patchers=[],
+                extra={},
+            )
+
+        async def parse_config(self):
+            sha = hashlib.sha256(self.url.encode("utf-8")).hexdigest()[:6]
+            if self.log_path is None and self.parent.log_path is not None:
+                self.log_path = os.path.join(self.filepath, f".pdm.{sha}.log")
+            self._logger.remove()
+            self._logger.add(
+                lambda msg: self.parent._console.print(
+                    Text.from_ansi(str(msg)), end="\n"
+                ),
+                level="DEBUG" if self.parent.debug else "INFO",
+                diagnose=True,
+                colorize=True,
+                format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
+            )
+            if self.log_path is not None:
+                self._logger.add(
+                    self.log_path,
+                    level="DEBUG" if self.parent.debug else "INFO",
+                    diagnose=True,
+                    colorize=True,
+                    format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
+                )
+            if self.md5 is not None:
+                self.md5 = await self.process_md5(self.md5)
+                self._logger
+            if self.pdm_tmp is None:
+                self.pdm_tmp = os.path.join(self.filepath, f".pdm.{sha}")
+            else:
+                self.pdm_tmp = os.path.join(self.pdm_tmp, f".pdm.{sha}")
+            os.makedirs(self.pdm_tmp, exist_ok=True)
+            self.filename = (
+                self.filename if self.filename else await self.get_file_name()
+            )
+            os.makedirs(self.filepath, exist_ok=True)
+            self.file_size = self.file_size or await self.get_url_file_size()
+            self.creat_info()
+            self.chunk_root = await self.rebuild_task()
+            if self.chunk_root is None:
+                self.chunk_root = await self.build_task()
 
         def __str__(self):
             chunks = []
@@ -215,13 +267,13 @@ class PDManager:
                             md5_value = await md5_response.text()
                             return md5_value.strip()
                         else:
-                            logger.error(
+                            self._logger.error(
                                 f"Failed to fetch md5 from url: {md5}, status code: {md5_response.status}"
                             )
             elif len(md5) == 32 and re.match(r"^[a-fA-F0-9]{32}$", md5):
                 return md5.lower()
             else:
-                logger.error(f"Invalid md5 value: {md5}")
+                self._logger.error(f"Invalid md5 value: {md5}")
                 return None
 
         async def get_file_name(self) -> str:
@@ -237,7 +289,7 @@ class PDManager:
                 fname = os.path.basename(URL(response.url).path)
                 if fname == "":
                     fname = f"{hashlib.sha256(self.url.encode('utf-8')).hexdigest()[:6]}.dat"
-                    logger.warning(
+                    self._logger.warning(
                         f"Cannot get filename from URL, use hash url as filename: {fname}"
                     )
                 return fname
@@ -286,7 +338,7 @@ class PDManager:
                     )
                     continue
                 if start >= self.file_size:  # TODO 没有问题就移除
-                    logger.warning(
+                    self._logger.warning(
                         f"start {start} >= file_size {self.file_size}, break"
                     )
                     break
@@ -395,7 +447,7 @@ class PDManager:
                         or info.get("filename") != self.filename
                         or info.get("url") != self.url
                     ):
-                        logger.warning(
+                        self._logger.warning(
                             "Existing .pdm file info does not match current download info, recreating .pdm file."
                         )
                         shutil.rmtree(self.pdm_tmp)
@@ -409,9 +461,9 @@ class PDManager:
                             }
                             json.dump(info, f, indent=4)
             else:
-                logger.error("Unknown error in creating .pdm file.")
+                self._logger.error("Unknown error in creating .pdm file.")
 
-        def merge_chunks(self):
+        async def merge_chunks(self):
             if os.path.exists(os.path.join(self.filepath, self.filename)):
                 index = 0
                 while True:
@@ -421,35 +473,24 @@ class PDManager:
                     ):
                         self.filename = f"{self.filename}.{index}"
                         break
-            with open(os.path.join(self.filepath, self.filename), "wb") as outfile:
+            dest_path = os.path.join(self.filepath, self.filename)
+            temp_path = dest_path + ".tmp"  # 先写入临时文件，最后原子替换
+            async with aiofiles.open(temp_path, "wb") as outfile:
                 for chunk in self.chunk_root:
-                    with open(chunk.chunk_path, "rb") as infile:
-                        shutil.copyfileobj(infile, outfile)
-            # 清理临时文件
-            shutil.rmtree(self.pdm_tmp, ignore_errors=True)
+                    async with aiofiles.open(chunk.chunk_path, "rb") as infile:
+                        while True:
+                            data = await infile.read(64 * 1024)  # 64KB 缓冲
+                            if not data:
+                                break
+                            await outfile.write(data)
+
+            await asyncio.to_thread(os.replace, temp_path, dest_path)
+            await asyncio.to_thread(shutil.rmtree, self.pdm_tmp, True)
 
         async def start_download(self):
-            self.md5 = await self.process_md5(self.md5)
-            self.filename = (
-                self.filename if self.filename else await self.get_file_name()
-            )
-            os.makedirs(self.filepath, exist_ok=True)
-            self.file_size = self.file_size or await self.get_url_file_size()
-            sha = hashlib.sha256(self.url.encode("utf-8")).hexdigest()[:6]
-            if self.pdm_tmp is None:
-                self.pdm_tmp = os.path.join(self.filepath, f".pdm.{sha}")
-            else:
-                self.pdm_tmp = os.path.join(self.pdm_tmp, f".pdm.{sha}")
-            os.makedirs(self.pdm_tmp, exist_ok=True)
-            self.creat_info()
-            self.chunk_root = await self.rebuild_task()
-            if self.chunk_root is None:
-                self.chunk_root = await self.build_task()
-            # self.parent.progress.update(
-            #     self.task, total=self.file_size, visible=True, advance=0
-            # )
+            await self.parse_config()
             await self._start_download()
-            self.merge_chunks()
+            await self.merge_chunks()
             return self.url
 
         async def _start_download(self):
@@ -463,13 +504,15 @@ class PDManager:
                     self.parent._progress.update(task, completed=sum(self.chunk_root))
                     await asyncio.sleep(1)
                 self.parent._progress.remove_task(task)
-                logger.info(f"Completed downloading {self.filename}")
+                self._logger.info(f"Completed downloading {self.filename}")
 
-            progress_task = asyncio.create_task(progress_run())
+            asyncio.create_task(progress_run())
 
             for chunk in self.chunk_root:
                 if tasks.__len__() < self.parent.max_concurrent_downloads:
-                    logger.debug(f"任务数量少于最大数量，新建,chunk_root未消耗完毕")
+                    self._logger.debug(
+                        f"tasks number {tasks.__len__()} < max_concurrent_downloads {self.parent.max_concurrent_downloads}, creating new task."
+                    )
                     tasks.append(asyncio.create_task(chunk.download()))
                 else:
                     # 任意一个任务完成后再添加新的任务
@@ -478,13 +521,15 @@ class PDManager:
                     )
                     for d in done:
                         tasks.remove(d)
-                    logger.debug(
-                        f"任务数量达到最大数量，完成一个再新建,chunk_root未消耗完毕"
+                    self._logger.debug(
+                        f"tasks number {tasks.__len__()} >= max_concurrent_downloads {self.parent.max_concurrent_downloads}, wait for a task to complete before creating new task."
                     )
                     tasks.append(asyncio.create_task(chunk.download()))
             while True:
                 if tasks.__len__() < self.parent.max_concurrent_downloads:
-                    logger.debug(f"任务数量少于最大数量，新建")
+                    self._logger.debug(
+                        f"tasks number {tasks.__len__()} < max_concurrent_downloads {self.parent.max_concurrent_downloads}, creating new task."
+                    )
                     new_chunk = await self.create_chunk()  # TODO
                     if new_chunk is None:
                         break
@@ -495,7 +540,9 @@ class PDManager:
                 )
                 for d in done:
                     tasks.remove(d)
-                logger.debug(f"任务数量达到最大数量，完成一个再新建")
+                self._logger.debug(
+                    f"tasks number {tasks.__len__()} >= max_concurrent_downloads {self.parent.max_concurrent_downloads}, wait for a task to complete before creating new task."
+                )
                 new_chunk = await self.create_chunk()  # TODO
                 if new_chunk is None:
                     break
@@ -564,7 +611,7 @@ class PDManager:
                                 headers["Range"] = (
                                     f"bytes={self.start + self.size}-{self.end}"
                                 )
-                                logger.debug(
+                                self.parent._logger.debug(
                                     f"Downloading chunk: {self}, with headers: {headers}"
                                 )
                                 # 仅在未完成时下载
@@ -599,11 +646,15 @@ class PDManager:
                             except aiohttp.client_exceptions.ClientPayloadError as e:
                                 await asyncio.sleep(1)
                             except Exception as e:
-                                logger.error(f"Error downloading chunk {self}: {e}")
+                                self.parent._logger.error(
+                                    f"Error downloading chunk {self}: {e}"
+                                )
                                 await asyncio.sleep(1)
-                            logger.debug(f"retrying download chunk: {self}")
+                            self.parent._logger.debug(
+                                f"retrying download chunk: {self}"
+                            )
                     if self.size != self.end - self.start + 1:
-                        logger.debug(
+                        self.parent._logger.debug(
                             f"Chunk not fully downloaded, splitting chunk: {self}"
                         )
                         async with self.parent.lock:
@@ -631,7 +682,7 @@ class PDManager:
                     md5=v.get("md5"),
                     file_name=v.get("file_name"),
                     dir_path=v.get("dir_path", os.getcwd()),
-                    log_path=v.get("log_path", os.getcwd()),
+                    log_path=v.get("log_path", None),
                 )
         else:
             for url in url_list:
@@ -643,7 +694,7 @@ class PDManager:
         md5: str = None,
         file_name: str = None,
         dir_path: str = os.getcwd(),
-        log_path: str = os.getcwd(),
+        log_path: str = None,
     ):
         self._urls[url] = PDManager.FileDownloader(
             self, url, dir_path, filename=file_name, md5=md5, log_path=log_path
@@ -655,7 +706,7 @@ class PDManager:
         self._logger.debug(f"Removed URL: {url}")
 
     async def start_download(self):
-        logger.debug(self)
+        self._logger.debug(self)
         downloaders = []
         with self._progress:
 
@@ -760,7 +811,7 @@ if __name__ == "__main__":
         help="Downloads URIs found in FILE. You can specify multiple URIs for a single entity: separate URIs on a single line using the TAB character. Reads input from stdin when '-' is specified. Additionally, options can be specified after each line of URI. This optional line must start with one or more white spaces and have one option per single line. See INPUT FILE section of man page for details. See also --deferred-input option.",
     )
     parser.add_argument(
-        "-j",
+        "-x",
         "--max-concurrent-downloads",
         type=int,
         default=5,
@@ -793,7 +844,7 @@ if __name__ == "__main__":
         help="The number of threads to use for downloading.",
     )
     parser.add_argument(
-        "url",
+        "urls",
         type=str,
         nargs="*",
         default=None,
@@ -801,9 +852,6 @@ if __name__ == "__main__":
     )  # 可以接受多个url参数
 
     args = parser.parse_args()
-    if args.version:
-        print(f"pdm version {version}")
-        sys.exit(0)
     if args.log == "-":
         args.log = sys.stdout
     # url = "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.3.0/sratoolkit.3.3.0-ubuntu64.tar.gz"
@@ -820,10 +868,8 @@ if __name__ == "__main__":
         max_concurrent_downloads=args.max_concurrent_downloads,
         min_split_size=args.min_split_size,
     )
-    if args.url:
+    if args.urls:
         pdm.add_urls(
-            args.url,
-            file_name=args.out,
-            dir_path=args.dir,
-            log_path=args.log,
+            args.urls,
         )
+    asyncio.run(pdm.start_download())

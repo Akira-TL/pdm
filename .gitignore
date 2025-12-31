@@ -3,3 +3,4 @@ download.log
 *pyc
 .pdm*
 *test*
+.vscode/launch.json
