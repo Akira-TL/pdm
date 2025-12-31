@@ -342,6 +342,15 @@ class PDManager:
                 logger.error("Unknown error in creating .pdm file.")
 
         def merge_chunks(self):
+            if os.path.exists(os.path.join(self.filepath, self.filename)):
+                index = 0
+                while True:
+                    index += 1
+                    if not os.path.exists(
+                        os.path.join(self.filepath, f"{self.filename}.{index}")
+                    ):
+                        self.filename = f"{self.filename}.{index}"
+                        break
             with open(os.path.join(self.filepath, self.filename), "wb") as outfile:
                 for chunk in self.chunk_root:
                     with open(chunk.chunk_path, "rb") as infile:
