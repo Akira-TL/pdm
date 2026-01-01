@@ -26,7 +26,7 @@
 
 ```bash
 # 安装基础依赖
-pip install aiohttp aiofiles requests rich loguru yarl multidict
+pip install aiohttp aiofiles requests rich loguru yarl multidict pyyaml
 ```
 
 ### 基本下载（32 线程，断点续传）
@@ -77,7 +77,7 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
 - [ ] 动态分块与最小分块尺寸策略
 - [ ] 批量下载与队列并发
 - [ ] 完整日志等级与输出
-- [ ] 完整性校验
+- [x] 完整性校验
 - [ ] 代理与 TLS 配置
 - [ ] 单元/集成测试
 - [ ] 打包与发布
@@ -93,7 +93,7 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
   - [x] `-o, --output PATH` 输出文件路径（或目录）
   - [x] `-t, --threads INT` 线程数（默认 32）
   - [x] `--continue` 断点续传开关（默认开启）
-  - [ ] `--split-size SIZE` 每块最小尺寸（如 `20M`；支持 `K/M/G`）
+  - [x] `--split-size SIZE` 每块最小尺寸（如 `20M`；支持 `K/M/G`）
   - [ ] `--timeout SECONDS` 超时（默认 10）
   - [x] `--retry INT` 重试次数（默认 3）
 
@@ -106,7 +106,7 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
 
 - 限速与监控
 
-  - [ ] `--limit RATE` 全局限速（如 `5M/s`）
+  - [ ] `--limit RATE` 全局限速（如 `5M`）
   - [ ] `--limit-per-thread RATE` 每线程限速
   - [ ] `--low-speed-threshold RATE` 低速阈值（触发重启）
   - [ ] `--low-speed-time SECONDS` 低速持续时间（判定窗口）
@@ -119,7 +119,7 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
 - 进度与状态
   - [ ] `--state-file PATH` 状态文件路径（默认同目录：`<output>.state.json`）
   - [x] `--log-level LEVEL` 日志级别（`INFO/DEBUG/WARN/ERROR`）
-  - [ ] `--input-file PATH` 批量 URL 列表（每行一个 URL）
+  - [x] `--input-file PATH` 批量 URL 列表（每行一个 URL）
   - [x] `--max-concurrent-downloads INT` 批量下载并发上限
 
 ## 参考文件

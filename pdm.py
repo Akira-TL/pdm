@@ -9,21 +9,24 @@ f"""
 @版本    :{version}
 """
 
-import argparse
-from glob import glob
-import hashlib
+import re
+import os
+import sys
+import yaml
 import json
-import os, aiofiles
 import time
 import shutil
-import subprocess
-import sys
-from typing import List, Optional, TextIO
+import asyncio
+import hashlib
 import aiohttp
+import argparse
+import aiofiles
+from yarl import URL
+from glob import glob
+from rich.text import Text
+from typing import List, Optional, TextIO
 from loguru._logger import Logger, Core
 
-from multidict import CIMultiDictProxy
-import requests
 from rich.progress import (
     Progress,
     Console,
@@ -34,33 +37,6 @@ from rich.progress import (
     TimeRemainingColumn,
     TextColumn,
 )
-from rich.text import Text
-
-# console = Console()
-from yarl import URL
-import re
-import asyncio
-
-# logger = Logger(
-#     core=Core(),
-#     exception=None,
-#     depth=0,
-#     record=False,
-#     lazy=False,
-#     colors=False,
-#     raw=False,
-#     capture=True,
-#     patchers=[],
-#     extra={},
-# )
-# logger.remove()
-# logger.add(
-#     lambda msg: console.print(Text.from_ansi(str(msg)), end="\n"),
-#     level="DEBUG",
-#     diagnose=True,
-#     colorize=True,
-#     format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
-# )
 
 
 class PDManager:
@@ -71,12 +47,14 @@ class PDManager:
         retry: int = 3,
         log_path: str | TextIO = sys.stdout,
         debug: bool = False,
-        split: int = 5,
-        #  check_integrity:bool=False,
+        check_integrity: bool = False,
         continue_download: bool = False,
         input_file: str = None,
         max_concurrent_downloads: int = 5,
         min_split_size: str = "20M",
+        force_sequential: bool = False,
+        tmp_dir: str = None,
+        min_split_size_bytes: int | str = "10k",
     ):
         self.threads = threads
         self.timeout = timeout
@@ -95,12 +73,13 @@ class PDManager:
             extra={},
         )
         self.debug = debug
-        self.split = split
-        # self.check_integrity = check_integrity
         self.continue_download = continue_download
         self.input_file = input_file
         self.max_concurrent_downloads = max_concurrent_downloads
         self.min_split_size = min_split_size
+        self.force_sequential = force_sequential
+        self.tmp_dir = tmp_dir
+        self.min_split_size_bytes = min_split_size_bytes
 
         self._dict_lock = asyncio.Lock()
         self._urls: dict = {}  # url:FileDownloader
@@ -155,6 +134,9 @@ class PDManager:
                 "max_concurrent_downloads cannot be more than 32. Setting to 32."
             )
         self.min_split_size = self.parse_size(self.min_split_size)
+        if self.force_sequential:
+            self.max_concurrent_downloads = 1
+            self._logger.info("Force sequential download enabled.")
 
     def parse_size(self, size_str: str) -> int:
         size_str = str(size_str).strip().upper()
@@ -230,9 +212,13 @@ class PDManager:
                     format="<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level}</lvl>] <c><u>{name}</u></c> | {message}",
                 )
             if self.md5 is not None:
+                if self.md5.find("*") == 0:
+                    self.md5 = self.md5.replace("*", self.url)
                 self.md5 = await self.process_md5(self.md5)
                 self._logger
-            if self.pdm_tmp is None:
+            if self.pdm_tmp is None and self.parent.tmp_dir is not None:
+                self.pdm_tmp = os.path.join(self.parent.tmp_dir, f".pdm.{sha}")
+            elif self.pdm_tmp is None and self.parent.tmp_dir is None:
                 self.pdm_tmp = os.path.join(self.filepath, f".pdm.{sha}")
             else:
                 self.pdm_tmp = os.path.join(self.pdm_tmp, f".pdm.{sha}")
@@ -322,7 +308,7 @@ class PDManager:
             elif chunk_size // 10240:
                 chunk_size -= chunk_size % 10240  # 保证chunk_size是10K的整数倍
             starts = list(range(0, self.file_size, chunk_size))
-            if starts[-1] < 102400:
+            if starts[-1] < self.parent.min_split_size_bytes:
                 starts[-2] += starts[-1]
                 starts.pop()
             root = None
@@ -394,7 +380,7 @@ class PDManager:
                     if gap > max_gap:
                         max_gap = gap
                         target_chunk = chunk
-                if target_chunk is None or max_gap <= 10240:
+                if target_chunk is None or max_gap <= self.parent.min_split_size_bytes:
                     return None
                 new_start = (
                     target_chunk.start
@@ -487,10 +473,38 @@ class PDManager:
             await asyncio.to_thread(os.replace, temp_path, dest_path)
             await asyncio.to_thread(shutil.rmtree, self.pdm_tmp, True)
 
+        async def check_integrity(self):
+            if self.parent.check_integrity:
+                if self.md5 is None:
+                    self._logger.info(
+                        f"{self.filename} No md5 provided, skipping integrity check."
+                    )
+                    return True
+                dest_path = os.path.join(self.filepath, self.filename)
+                hash_md5 = hashlib.md5()
+                async with aiofiles.open(dest_path, "rb") as f:
+                    while True:
+                        data = await f.read(64 * 1024)  # 64KB 缓冲
+                        if not data:
+                            break
+                        hash_md5.update(data)
+                file_md5 = hash_md5.hexdigest()
+                if file_md5.lower() == self.md5.lower():
+                    self._logger.info(
+                        f"{self.filename} MD5 checksum matches, integrity check passed."
+                    )
+                    return True
+                else:
+                    self._logger.error(
+                        f"{self.filename}MD5 checksum does not match! Expected: {self.md5}, Got: {file_md5}"
+                    )
+                    return False
+
         async def start_download(self):
             await self.parse_config()
             await self._start_download()
             await self.merge_chunks()
+            await self.check_integrity()
             return self.url
 
         async def _start_download(self):
@@ -688,6 +702,21 @@ class PDManager:
             for url in url_list:
                 self.append(url)
 
+    def load_input_file(self, input_file: str):
+        with open(input_file, "r") as f:
+            content = f.read()
+            try:
+                data = json.loads(content)  # 尝试json
+                self.add_urls(data)
+            except json.JSONDecodeError:
+                try:
+                    data = yaml.safe_load(content)  # 尝试yaml
+                    self.add_urls(data)
+                except Exception:
+                    url_list = content.splitlines()  # 纯文本无额外字段
+                    url_list = [url.strip() for url in url_list if url.strip()]
+                    self.add_urls(url_list)
+
     def append(
         self,
         url: str,
@@ -745,7 +774,7 @@ class PDManager:
         return list(self._urls.keys())
 
     def __str__(self):
-        return f"PDManager(threads={self.threads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, split={self.split}, continue_download={self.continue_download}, input_file={self.input_file}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
+        return f"PDManager(threads={self.threads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, input_file={self.input_file}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
 
 
 if __name__ == "__main__":
@@ -761,7 +790,8 @@ if __name__ == "__main__":
         "-l",
         "--log",
         type=str,
-        default=sys.stdout,
+        required=False,
+        default=None,
         help="The file name of the log file. If '-' is specified, log is written to stdout.",
     )
     parser.add_argument(
@@ -784,13 +814,6 @@ if __name__ == "__main__":
         help="The file name of the downloaded file. It is always relative to the directory given in -d option. When the -Z option is used, this option will be ignored.",
     )
     parser.add_argument(
-        "-s",
-        "--split",
-        type=int,
-        default=5,
-        help="Download a file using N connections. If more than N URIs are given, first N URIs are used and remaining URLs are used for backup. If less than N URIs are given, those URLs are used more than once so that N connections total are made simultaneously. See also the --min-split-size option.",
-    )
-    parser.add_argument(
         "-V",
         "--check-integrity",
         action="store_true",
@@ -807,8 +830,9 @@ if __name__ == "__main__":
         "-i",
         "--input-file",
         type=str,
-        default=None,
-        help="Downloads URIs found in FILE. You can specify multiple URIs for a single entity: separate URIs on a single line using the TAB character. Reads input from stdin when '-' is specified. Additionally, options can be specified after each line of URI. This optional line must start with one or more white spaces and have one option per single line. See INPUT FILE section of man page for details. See also --deferred-input option.",
+        default=[],
+        action="append",
+        help="Downloads URIs found in FILE(s). You can provide a JSON, YAML, or plain text file containing the list of URLs to download, along with optional metadata such as expected MD5 checksums, custom file names, and directory paths.",
     )
     parser.add_argument(
         "-x",
@@ -854,10 +878,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.log == "-":
         args.log = sys.stdout
-    # url = "https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.3.0/sratoolkit.3.3.0-ubuntu64.tar.gz"
-    # pdm = PDManager(max_concurrent_downloads=32, continue_download=True)
-    # pdm.add_url_list([url])
-    # asyncio.run(pdm.start_download())
+    if args.force_sequential and args.out is not None:
+        Warning(
+            "The --force-sequential option is used, the --out option will be ignored."
+        )
+        args.out = None
+
     pdm = PDManager(
         threads=args.threads,
         log_path=args.log,
@@ -867,9 +893,17 @@ if __name__ == "__main__":
         input_file=args.input_file,
         max_concurrent_downloads=args.max_concurrent_downloads,
         min_split_size=args.min_split_size,
+        force_sequential=args.force_sequential,
+        tmp_dir=args.tmp,
+        check_integrity=args.check_integrity,
+        min_split_size_bytes=args.min_split_size,
     )
     if args.urls:
         pdm.add_urls(
             args.urls,
         )
+    if args.input_file:
+        for file in args.input_file:
+            if os.path.exists(file):
+                pdm.load_input_file(file)
     asyncio.run(pdm.start_download())
