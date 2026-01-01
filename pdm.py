@@ -24,6 +24,7 @@ import aiofiles
 from yarl import URL
 from glob import glob
 from rich.text import Text
+from urllib.parse import unquote
 from typing import List, Optional, TextIO
 from loguru._logger import Logger, Core
 
@@ -79,7 +80,6 @@ class PDManager:
         self.min_split_size = min_split_size
         self.force_sequential = force_sequential
         self.tmp_dir = tmp_dir
-        self.min_split_size_bytes = min_split_size_bytes
 
         self._dict_lock = asyncio.Lock()
         self._urls: dict = {}  # url:FileDownloader
@@ -137,6 +137,13 @@ class PDManager:
         if self.force_sequential:
             self.max_concurrent_downloads = 1
             self._logger.info("Force sequential download enabled.")
+        self.threads = int(self.threads)
+        if self.threads < 1:
+            self.threads = 1
+            self._logger.warning("threads cannot be less than 1. Setting to 1.")
+        elif self.threads > 64:
+            self.threads = 64
+            self._logger.warning("threads cannot be more than 64. Setting to 64.")
 
     def parse_size(self, size_str: str) -> int:
         size_str = str(size_str).strip().upper()
@@ -269,9 +276,11 @@ class PDManager:
                         self.header_info = response.headers
                 cd = self.header_info.get("Content-Disposition")
                 if cd:
-                    fname = re.findall('filename="(.+)"', cd)
+                    fname = re.findall('.*filename="*(.+)"*', cd)
+                    # fname可能存在中文使用%xx编码的情况，需要解码
+                    fname = unquote(fname[0]) if fname else None
                     if fname:
-                        return fname[0]
+                        return fname
                 fname = os.path.basename(URL(response.url).path)
                 if fname == "":
                     fname = f"{hashlib.sha256(self.url.encode('utf-8')).hexdigest()[:6]}.dat"
@@ -301,7 +310,7 @@ class PDManager:
                 PDManager.FileDownloader.ChunkManager: 分块链表头
             """
             chunk_size = (
-                self.file_size // self.parent.split
+                self.file_size // self.parent.max_concurrent_downloads
             )  # TODO file_size为-1时的处理
             if chunk_size < self.parent.min_split_size:
                 chunk_size = self.parent.min_split_size
@@ -309,7 +318,6 @@ class PDManager:
                 chunk_size -= chunk_size % 10240  # 保证chunk_size是10K的整数倍
             starts = list(range(0, self.file_size, chunk_size))
             if starts[-1] < self.parent.min_split_size_bytes:
-                starts[-2] += starts[-1]
                 starts.pop()
             root = None
             for i in range(len(starts)):
@@ -888,7 +896,6 @@ if __name__ == "__main__":
         threads=args.threads,
         log_path=args.log,
         debug=args.debug,
-        split=args.split,
         continue_download=args.continue_download,
         input_file=args.input_file,
         max_concurrent_downloads=args.max_concurrent_downloads,
