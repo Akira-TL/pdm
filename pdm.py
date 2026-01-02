@@ -46,6 +46,7 @@ class PDManager:
         threads: int = 4,
         timeout: int = 10,
         retry: int = 3,
+        retry_wait: int = 5,
         log_path: str | TextIO = sys.stdout,
         debug: bool = False,
         check_integrity: bool = False,
@@ -84,6 +85,7 @@ class PDManager:
         self.user_agent = user_agent  # or {"User-Agent": "PDM-Downloader/1.0"}
         self.check_integrity = check_integrity
         self.chunk_retry_speed = chunk_retry_speed
+        self.retry_wait = retry_wait
 
         self._dict_lock = asyncio.Lock()
         self._urls: dict = {}  # url:FileDownloader
@@ -528,6 +530,7 @@ class PDManager:
                 await self.check_integrity()
                 self._done = True
             except Exception as e:
+                await asyncio.sleep(self.parent.parent.retry_wait)
                 await self.start_download(_iter=_iter - 1) if _iter > 0 else None
             if self._done:
                 return self.url
@@ -716,6 +719,9 @@ class PDManager:
                                                         # )
                                                     pos += len(data)
                                                 if continue_flug:
+                                                    await asyncio.sleep(
+                                                        self.parent.parent.retry_wait
+                                                    )
                                                     self.parent._logger.debug(
                                                         "speed is low restarting..."
                                                     )
@@ -723,12 +729,12 @@ class PDManager:
                                 except (
                                     aiohttp.client_exceptions.ClientPayloadError
                                 ) as e:
-                                    await asyncio.sleep(1)
+                                    await asyncio.sleep(self.parent.parent.retry_wait)
                                 except Exception as e:
                                     self.parent._logger.error(
                                         f"Error downloading chunk {self}: {e}"
                                     )
-                                    await asyncio.sleep(1)
+                                    await asyncio.sleep(self.parent.parent.retry_wait)
                                     break
                                 if (
                                     self.end is not None
@@ -941,6 +947,13 @@ if __name__ == "__main__":
         default=3,
         help="Number of times to retry downloading a URL upon failure.",
     )
+    parser.add_argument(  # --retry-wait
+        "-W",
+        "--retry-wait",
+        type=int,
+        default=5,
+        help="Maximum wait time in seconds between retries.",
+    )
     parser.add_argument(
         "-Z",
         "--force-sequential",
@@ -1005,6 +1018,7 @@ if __name__ == "__main__":
         user_agent=args.user_agent,
         chunk_retry_speed=args.chunk_retry_speed,
         retry=args.retry,
+        retry_wait=args.retry_wait,
     )
     if args.urls:
         pdm.add_urls(
