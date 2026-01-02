@@ -43,8 +43,8 @@ from rich.progress import (
 class PDManager:
     def __init__(
         self,
-        threads: int = 4,
-        timeout: int = 10,
+        max_downloads: int = 4,
+        timeout: int = 60,
         retry: int = 3,
         retry_wait: int = 5,
         log_path: str | TextIO = sys.stdout,
@@ -58,9 +58,13 @@ class PDManager:
         tmp_dir: str = None,
         user_agent: dict = None,
         chunk_retry_speed: str | int = -1,
+        timeout_chunk: int = 10,
+        auto_file_renaming: bool = True,
+        # threads
     ):
-        self.threads = threads
+        self.max_downloads = max_downloads
         self.timeout = timeout
+        self.timeout_chunk = timeout_chunk
         self.retry = retry
         self.log_path = log_path
         self._logger = Logger(
@@ -86,6 +90,7 @@ class PDManager:
         self.check_integrity = check_integrity
         self.chunk_retry_speed = chunk_retry_speed
         self.retry_wait = retry_wait
+        self.auto_file_renaming = auto_file_renaming
 
         self._dict_lock = asyncio.Lock()
         self._urls: dict = {}  # url:FileDownloader
@@ -143,11 +148,11 @@ class PDManager:
         if self.force_sequential:
             self.max_concurrent_downloads = 1
             self._logger.info("Force sequential download enabled.")
-        self.threads = int(self.threads)
-        if self.threads < 1:
-            self.threads = 1
+        self.max_downloads = int(self.max_downloads)
+        if self.max_downloads < 1:
+            self.max_downloads = 1
             self._logger.warning("threads cannot be less than 1. Setting to 1.")
-        elif self.threads > 32:
+        elif self.max_downloads > 32:
             self._logger.warning(
                 "threads are more than 32, may cause high resource usage. "
             )
@@ -263,7 +268,9 @@ class PDManager:
                     return md5.strip()
             elif re.match(r"^(http|https|ftp)://", md5):
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(md5) as md5_response:
+                    async with session.get(
+                        md5, timeout=self.parent.timeout
+                    ) as md5_response:
                         if md5_response.status == 200:
                             md5_value = await md5_response.text()
                             return md5_value.strip()
@@ -284,6 +291,7 @@ class PDManager:
                         self.url,
                         allow_redirects=True,
                         headers={"User-Agent": self.parent.user_agent},
+                        timeout=self.parent.timeout,
                     ) as response:
                         self.header_info = response.headers
                 cd = self.header_info.get("Content-Disposition")
@@ -304,7 +312,11 @@ class PDManager:
         async def get_url_file_size(self) -> int:
             async with aiohttp.ClientSession() as session:
                 if self.header_info is not None:
-                    async with session.head(self.url, allow_redirects=True) as response:
+                    async with session.head(
+                        self.url,
+                        allow_redirects=True,
+                        timeout=self.parent.timeout,
+                    ) as response:
                         self.header_info = response.headers
                 file_size = self.header_info.get("Content-Length")
                 if file_size:
@@ -521,6 +533,11 @@ class PDManager:
                     return False
 
         async def start_download(self, _iter=None):
+            if (
+                os.path.exists(os.path.join(self.filepath, self.filename))
+                and self.parent.auto_file_renaming
+            ):
+                return self.url
             if _iter is None:
                 _iter = self.parent.retry
             try:
@@ -675,7 +692,9 @@ class PDManager:
                                     )
                                     if need_download:
                                         async with session.get(
-                                            self.parent.url, headers=headers
+                                            self.parent.url,
+                                            headers=headers,
+                                            timeout=self.parent.parent.chunk_timeout,
                                         ) as response:
                                             if response.status in (200, 206):
                                                 last_time = time.time()
@@ -754,7 +773,7 @@ class PDManager:
                                 self.parent._logger.debug(
                                     f"completed download chunk: {self}"
                                 )
-                    if self.end is None or self.size != self.end - self.start + 1:
+                    if self.size != self.end - self.start + 1:
                         self.parent._logger.warning(
                             f"Chunk not fully downloaded, splitting chunk: {self}"
                         )
@@ -848,7 +867,7 @@ class PDManager:
                         continue
                     downloading[url] = True
                     assert isinstance(download_entity, PDManager.FileDownloader)
-                    if len(downloaders) < self.threads:
+                    if len(downloaders) < self.max_downloads:
                         downloaders.append(
                             asyncio.create_task(download_entity.start_download())
                         )
@@ -866,7 +885,7 @@ class PDManager:
         return list(self._urls.keys())
 
     def __str__(self):
-        return f"PDManager(threads={self.threads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, input_file={self.input_file}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
+        return f"PDManager(threads={self.max_downloads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, input_file={self.input_file}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
 
 
 if __name__ == "__main__":
@@ -954,6 +973,31 @@ if __name__ == "__main__":
         default=5,
         help="Maximum wait time in seconds between retries.",
     )
+    parser.add_argument(  # timeout
+        "--timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds for each download request.",
+    )
+    parser.add_argument(
+        "--chunk-timeout",
+        type=int,
+        default=10,
+        help="Timeout in seconds for each chunk download request.",
+    )
+    parser.add_argument(
+        "-N",
+        "--max-downloads",
+        type=int,
+        default=4,
+        help="The maximum number of concurrent downloads.",
+    )
+    parser.add_argument(
+        "--auto-file-renaming",
+        type=bool,
+        default=True,
+        help="Automatically rename the output file if a file with the same name already exists in the target directory.",
+    )
     parser.add_argument(
         "-Z",
         "--force-sequential",
@@ -1005,7 +1049,7 @@ if __name__ == "__main__":
         args.out = None
 
     pdm = PDManager(
-        threads=args.threads,
+        max_downloads=args.max_downloads,
         log_path=args.log,
         debug=args.debug,
         continue_download=args.continue_download,
@@ -1019,6 +1063,9 @@ if __name__ == "__main__":
         chunk_retry_speed=args.chunk_retry_speed,
         retry=args.retry,
         retry_wait=args.retry_wait,
+        timeout=args.timeout,
+        chunk_timeout=args.chunk_timeout,
+        auto_file_renaming=args.auto_file_renaming,
     )
     if args.urls:
         pdm.add_urls(

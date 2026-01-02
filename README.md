@@ -70,14 +70,14 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
 - [x] 异步网络栈依赖
 - [x] 多线程/多段下载的参数设计
 - [ ] 下载任务较多情况下多进程下载处理
-- [ ] 自定义 UA 与通用 Headers 的 CLI 支持与请求集成
+- [x] 自定义 UA 与通用 Headers 的 CLI 支持与请求集成
 - [ ] 下载限速
 - [ ] 不可续传链接降级策略与恢复逻辑
-- [ ] 低速阈值监控与自动重启线程
+- [x] 低速阈值监控与自动重启线程
 - [ ] 断点续传状态文件定义与稳定持久化
-- [ ] 动态分块与最小分块尺寸策略
-- [ ] 批量下载与队列并发
-- [ ] 完整日志等级与输出
+- [x] 动态分块与最小分块尺寸策略
+- [x] 批量下载与队列并发
+- [x] 完整日志等级与输出
 - [x] 完整性校验
 - [ ] 代理与 TLS 配置
 - [ ] 单元/集成测试
@@ -95,12 +95,12 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
   - [x] `-t, --threads INT` 线程数（默认 32）
   - [x] `--continue` 断点续传开关（默认开启）
   - [x] `--split-size SIZE` 每块最小尺寸（如 `20M`；支持 `K/M/G`）
-  - [ ] `--timeout SECONDS` 超时（默认 10）
+  - [x] `--timeout SECONDS` 超时（默认 10）
   - [x] `--retry INT` 重试次数（默认 3）
 
 - 请求与网络
 
-  - [ ] `--ua STRING` 自定义 User-Agent
+  - [x] `--ua STRING` 自定义 User-Agent
   - [ ] `-H, --header "Key: Value"` 可多次传入任意请求头
   - [ ] `--proxy URL` 代理（如 `http://127.0.0.1:7890`）
   - [ ] `--insecure` 关闭 TLS 验证（不推荐）
@@ -109,12 +109,12 @@ python pdm.py --input-file urls.txt --max-concurrent-downloads 3 --threads 16
 
   - [ ] `--limit RATE` 全局限速（如 `5M`）
   - [ ] `--limit-per-thread RATE` 每线程限速
-  - [ ] `--low-speed-threshold RATE` 低速阈值（触发重启）
+  - [x] `--low-speed-threshold RATE` 低速阈值（触发重启）
   - [ ] `--low-speed-time SECONDS` 低速持续时间（判定窗口）
 
 - 不可续传策略
 
-  - [ ] `--no-range-fallback` 遇到不支持 Range 时，自动切换单线程顺序下载
+  - [x] `--no-range-fallback` 遇到不支持 Range 时，自动切换单线程顺序下载
   - [ ] `--unknown-size-buffer SIZE` 流式写入缓冲（如 `1M`）
 
 - 进度与状态
