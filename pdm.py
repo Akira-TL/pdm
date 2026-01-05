@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
 version = "0.1.1"
-f"""
+"""
 @文件    :pdm.py
 @说明    :模拟IDM下载方式的PDM下载器，命令行脚本
 @时间    :2025/12/27 11:06:03
 @作者    :Akira_TL
-@版本    :{version}
+@版本    :0.1.1
 """
 
 import re
@@ -310,6 +310,7 @@ class PDManager:
                     self.url,
                     allow_redirects=True,
                     timeout=self.parent.timeout,
+                    headers={"Accept-Encoding": "identity"},
                 ) as response:
                     if response.status in (200, 206):
                         return response.headers
@@ -338,9 +339,9 @@ class PDManager:
             if self.file_size < 0:
                 return PDManager.FileDownloader.Chunk(
                     self,
-                    start,
+                    0,
                     None,
-                    os.path.join(self.pdm_tmp, f"{self.filename}.{start}"),
+                    os.path.join(self.pdm_tmp, f"{self.filename}.0"),
                 )
             chunk_size = self.file_size // self.parent.max_concurrent_downloads
             if chunk_size < self.parent.min_split_size:
