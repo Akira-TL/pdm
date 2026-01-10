@@ -181,6 +181,102 @@ class PDManager:
         else:
             raise ValueError(f"Invalid size format: {size_str}")
 
+    def add_urls(self, url_list: dict | list[str]):
+        if type(url_list) == dict:
+            for url, v in url_list.items():
+                assert type(v) == dict
+                self.append(
+                    url,
+                    md5=v.get("md5"),
+                    file_name=v.get("file_name"),
+                    dir_path=v.get(
+                        "dir_path", self.out_dir if self.out_dir else os.getcwd()
+                    ),
+                    log_path=v.get("log_path", None),
+                )
+        else:
+            for url in url_list:
+                self.append(url, dir_path=self.out_dir if self.out_dir else os.getcwd())
+
+    def load_input_file(self, input_file: str):
+        with open(input_file, "r") as f:
+            content = f.read()
+            try:
+                data = json.loads(content)  # 尝试json
+                self.add_urls(data)
+            except json.JSONDecodeError:
+                try:
+                    data = yaml.safe_load(content)  # 尝试yaml
+                    self.add_urls(data)
+                except Exception:
+                    url_list = content.splitlines()  # 纯文本无额外字段
+                    url_list = [url.strip() for url in url_list if url.strip()]
+                    self.add_urls(url_list)
+
+    def append(
+        self,
+        url: str,
+        md5: str = None,
+        file_name: str = None,
+        dir_path: str = os.getcwd(),
+        log_path: str = None,
+    ):
+        self._urls[url] = PDManager.FileDownloader(
+            self, url, dir_path, filename=file_name, md5=md5, log_path=log_path
+        )
+        self._logger.debug(f"Added URL: {url}")
+
+    def pop(self, url: str):
+        self._urls.pop(url, None)
+        self._logger.debug(f"Removed URL: {url}")
+
+    async def wait(self, downloaders: list[asyncio.Task]):
+        done, pending = await asyncio.wait(
+            downloaders, return_when=asyncio.FIRST_COMPLETED
+        )
+        for d in done:
+            try:
+                _url = d.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self._logger.error(f"task error: {e}")
+                self._logger.error(traceback.format_exc())
+            downloaders.remove(d)
+            # self.pop(_url)
+
+    async def start_download(self):
+        self._logger.debug(self)
+        downloaders = []
+        downloading = {}
+        with self._progress:
+
+            while self._urls:  # 如果在下载过程中添加了任务
+                for url, download_entity in self._urls.items():
+                    if url in downloading:
+                        continue
+                    downloading[url] = True
+                    assert isinstance(download_entity, PDManager.FileDownloader)
+                    if len(downloaders) < self.max_downloads:
+                        downloaders.append(
+                            asyncio.create_task(download_entity.start_download())
+                        )
+                    else:
+                        await self.wait(downloaders)
+                        downloaders.append(
+                            asyncio.create_task(download_entity.start_download())
+                        )
+                    self._logger.debug(f"Starting download for {url}")
+                # await asyncio.gather(*downloaders)
+                await self.wait(downloaders)
+                await asyncio.sleep(1)
+
+    def urls(self) -> List[str]:
+        return list(self._urls.keys())
+
+    def __str__(self):
+        return f"PDManager(threads={self.max_downloads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
+
     class FileDownloader:
         def __init__(
             self,
@@ -689,118 +785,45 @@ class PDManager:
                     return NotImplemented
                 return self.size + other
 
-            async def download(self):
-                assert self.end is not None or self.size >= 0
-                headers = {}
-                # 复用会话
-                # 仅打开一次文件（追加或新建）
-                file_mode = "ab" if os.path.exists(self.chunk_path) else "wb"
-                async with aiohttp.ClientSession() as session, aiofiles.open(
-                    self.chunk_path, file_mode
-                ) as f:
-                    # 断连续传
-                    for _ in range(self.parent.parent.retry):
-                        # 已完整下载
-                        if os.path.exists(self.chunk_path):
-                            if (
-                                self.end is not None
-                                and self.size == self.end - self.start + 1
-                            ):
-                                return self
-                        while True:
-                            continue_flug = False
-                            try:
-                                # 构造 Range（仅当 end 可用时）
-                                if self.end is not None:
-                                    headers["Range"] = (
-                                        f"bytes={self.start + self.size}-{self.end}"
-                                    )
-                                else:
-                                    if "Range" in headers:
-                                        headers.pop("Range")
-                                self.parent._logger.debug(
-                                    f"Downloading chunk: {self}, with headers: {headers}"
-                                )
-                                # 仅在未完成时下载（若 end 不可用则一直下载直到流结束）
-                                need_download = (
-                                    self.end is None
-                                    or self.size < self.end - self.start + 1
-                                )
-                                if need_download:
-                                    async with session.get(
-                                        self.parent.url,
-                                        headers=headers,
-                                        # timeout=self.parent.parent.chunk_timeout, # TODO 实现超时逻辑，避免频繁超时
-                                    ) as response:
-                                        if response.status in (200, 206):
-                                            last_time = time.time()
-                                            # 若文件已存在，定位到当前末尾
-                                            pos = await f.tell()
-                                            # 限制写入至 chunk.end（如果已知）
-                                            async for (
-                                                data
-                                            ) in response.content.iter_chunked(
-                                                10240
-                                            ):  # 如果数据不足10240字节则直接写入
-                                                if self.end is not None:
-                                                    remaining = (
-                                                        self.end - self.start + 1 - pos
-                                                    )
-                                                    if remaining <= 0:
-                                                        break
-                                                    data = data[:remaining]
-                                                await f.write(data)
-                                                async with self.parent.lock:
-                                                    self.size += len(data)
-                                                    now = time.time()
-                                                    # 计算速率，防止除以0
-                                                    elaps = max(now - last_time, 1e-6)
-                                                    speed = len(data) / elaps
-                                                    # 如果速度低于阈值，则重启本片段下载
-                                                    if (
-                                                        self.parent.parent.chunk_retry_speed
-                                                        and speed
-                                                        < self.parent.parent.chunk_retry_speed
-                                                    ):
-                                                        continue_flug = True
-                                                    last_time = now
-                                                pos += len(data)
-                                            if continue_flug:
-                                                await asyncio.sleep(
-                                                    self.parent.parent.retry_wait
-                                                )
-                                                self.parent._logger.debug(
-                                                    "speed is low restarting..."
-                                                )
-                                                break
-                            except aiohttp.client_exceptions.ClientPayloadError as e:
-                                await asyncio.sleep(self.parent.parent.retry_wait)
-                            except Exception as e:
-                                self.parent._logger.debug(
-                                    f"Error downloading chunk {self}: {e}"
-                                )
-                                await asyncio.sleep(self.parent.parent.retry_wait)
-                                break
-                            if (
-                                self.end is not None
-                                and self.size == self.end - self.start + 1
-                            ):
-                                return self
-                        if self.end is None:
-                            # 如果没有明确的 end，且循环结束则视为完成
-                            self.parent._logger.debug(
-                                f"completed download chunk (unknown size): {self}"
-                            )
-                            self.parent._downloaded = True
-                            return self
-                        elif self.size < self.end - self.start + 1:
-                            self.parent._logger.debug(
-                                f"retrying download chunk: {self}"
-                            )
-                        else:
-                            self.parent._logger.debug(
-                                f"completed download chunk: {self}"
-                            )
+            def _is_complete(self) -> bool:
+                return self.end is not None and self.size == self.end - self.start + 1
+
+            def _needs_download(self) -> bool:
+                return self.end is None or self.size < self.end - self.start + 1
+
+            def _apply_range_header(self, headers: dict):
+                if self.end is not None:
+                    headers["Range"] = f"bytes={self.start + self.size}-{self.end}"
+                else:
+                    if "Range" in headers:
+                        headers.pop("Range")
+
+            async def _stream_response(self, response, f) -> bool:
+                last_time = time.time()
+                pos = await f.tell()
+                continue_flag = False
+                async for data in response.content.iter_chunked(10240):
+                    if self.end is not None:
+                        remaining = self.end - self.start + 1 - pos
+                        if remaining <= 0:
+                            break
+                        data = data[:remaining]
+                    await f.write(data)
+                    async with self.parent.lock:
+                        self.size += len(data)
+                        now = time.time()
+                        elaps = max(now - last_time, 1e-6)
+                        speed = len(data) / elaps
+                        if (
+                            self.parent.parent.chunk_retry_speed
+                            and speed < self.parent.parent.chunk_retry_speed
+                        ):
+                            continue_flag = True
+                        last_time = now
+                    pos += len(data)
+                return continue_flag
+
+            async def _split_incomplete(self):
                 if self.size != self.end - self.start + 1:
                     self.parent._logger.warning(
                         f"Chunk not fully downloaded, splitting chunk: {self}"
@@ -820,103 +843,67 @@ class PDManager:
                         )
                         self.end = new_start - 1
                         self.next = new_chunk
+
+            async def download(self):
+                assert self.end is not None or self.size >= 0
+                headers = {}
+                file_mode = "ab" if os.path.exists(self.chunk_path) else "wb"
+                async with aiohttp.ClientSession() as session, aiofiles.open(
+                    self.chunk_path, file_mode
+                ) as f:
+                    for _ in range(self.parent.parent.retry):
+                        if os.path.exists(self.chunk_path) and self._is_complete():
+                            return self
+                        while True:
+                            try:
+                                self._apply_range_header(headers)
+                                self.parent._logger.debug(
+                                    f"Downloading chunk: {self}, with headers: {headers}"
+                                )
+                                if self._needs_download():
+                                    async with session.get(
+                                        self.parent.url,
+                                        headers=headers,
+                                        timeout=self.parent.parent.chunk_timeout,
+                                    ) as response:
+                                        if response.status in (200, 206):
+                                            continue_flag = await self._stream_response(
+                                                response, f
+                                            )
+                                            if continue_flag:
+                                                await asyncio.sleep(
+                                                    self.parent.parent.retry_wait
+                                                )
+                                                self.parent._logger.debug(
+                                                    "speed is low restarting..."
+                                                )
+                                                break
+                            except aiohttp.client_exceptions.ClientPayloadError:
+                                await asyncio.sleep(self.parent.parent.retry_wait)
+                            except Exception as e:
+                                self.parent._logger.debug(
+                                    f"Error downloading chunk {self}: {e}"
+                                )
+                                await asyncio.sleep(self.parent.parent.retry_wait)
+                                break
+                            if self._is_complete():
+                                return self
+                        if self.end is None:
+                            self.parent._logger.debug(
+                                f"completed download chunk (unknown size): {self}"
+                            )
+                            self.parent._downloaded = True
+                            return self
+                        elif self._needs_download():
+                            self.parent._logger.debug(
+                                f"retrying download chunk: {self}"
+                            )
+                        else:
+                            self.parent._logger.debug(
+                                f"completed download chunk: {self}"
+                            )
+                await self._split_incomplete()
                 return self
-
-    def add_urls(self, url_list: dict | list[str]):
-        if type(url_list) == dict:
-            for url, v in url_list.items():
-                assert type(v) == dict
-                self.append(
-                    url,
-                    md5=v.get("md5"),
-                    file_name=v.get("file_name"),
-                    dir_path=v.get(
-                        "dir_path", self.out_dir if self.out_dir else os.getcwd()
-                    ),
-                    log_path=v.get("log_path", None),
-                )
-        else:
-            for url in url_list:
-                self.append(url, dir_path=self.out_dir if self.out_dir else os.getcwd())
-
-    def load_input_file(self, input_file: str):
-        with open(input_file, "r") as f:
-            content = f.read()
-            try:
-                data = json.loads(content)  # 尝试json
-                self.add_urls(data)
-            except json.JSONDecodeError:
-                try:
-                    data = yaml.safe_load(content)  # 尝试yaml
-                    self.add_urls(data)
-                except Exception:
-                    url_list = content.splitlines()  # 纯文本无额外字段
-                    url_list = [url.strip() for url in url_list if url.strip()]
-                    self.add_urls(url_list)
-
-    def append(
-        self,
-        url: str,
-        md5: str = None,
-        file_name: str = None,
-        dir_path: str = os.getcwd(),
-        log_path: str = None,
-    ):
-        self._urls[url] = PDManager.FileDownloader(
-            self, url, dir_path, filename=file_name, md5=md5, log_path=log_path
-        )
-        self._logger.debug(f"Added URL: {url}")
-
-    def pop(self, url: str):
-        self._urls.pop(url, None)
-        self._logger.debug(f"Removed URL: {url}")
-
-    async def wait(self, downloaders: list[asyncio.Task]):
-        done, pending = await asyncio.wait(
-            downloaders, return_when=asyncio.FIRST_COMPLETED
-        )
-        for d in done:
-            try:
-                _url = d.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                self._logger.error(f"task error: {e}")
-                self._logger.error(traceback.format_exc())
-            downloaders.remove(d)
-            # self.pop(_url)
-
-    async def start_download(self):
-        self._logger.debug(self)
-        downloaders = []
-        downloading = {}
-        with self._progress:
-
-            while self._urls:  # 如果在下载过程中添加了任务
-                for url, download_entity in self._urls.items():
-                    if url in downloading:
-                        continue
-                    downloading[url] = True
-                    assert isinstance(download_entity, PDManager.FileDownloader)
-                    if len(downloaders) < self.max_downloads:
-                        downloaders.append(
-                            asyncio.create_task(download_entity.start_download())
-                        )
-                    else:
-                        await self.wait(downloaders)
-                        downloaders.append(
-                            asyncio.create_task(download_entity.start_download())
-                        )
-                    self._logger.debug(f"Starting download for {url}")
-                # await asyncio.gather(*downloaders)
-                await self.wait(downloaders)
-                await asyncio.sleep(1)
-
-    def urls(self) -> List[str]:
-        return list(self._urls.keys())
-
-    def __str__(self):
-        return f"PDManager(threads={self.max_downloads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
 
 
 if __name__ == "__main__":
@@ -1006,13 +993,13 @@ if __name__ == "__main__":
     parser.add_argument(  # timeout
         "--timeout",
         type=int,
-        default=60,
+        default=None,
         help="Timeout in seconds for each download request.",
     )
     parser.add_argument(
         "--chunk-timeout",
         type=int,
-        default=10,
+        default=None,
         help="Timeout in seconds for each chunk download request.",
     )
     parser.add_argument(
@@ -1095,7 +1082,6 @@ if __name__ == "__main__":
         chunk_timeout=args.chunk_timeout,
         auto_file_renaming=args.no_auto_file_renaming,
         out_dir=args.dir,
-        user_agent=args.user_agent,
     )
     if len(args.urls) == 1 and args.out is not None:
         pdm.append(
