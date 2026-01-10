@@ -42,6 +42,11 @@ from rich.progress import (
 
 
 class PDManager:
+    """
+    下载管理器，负责全局配置、任务队列调度与进度显示。
+    提供解析输入、创建下载器、并发控制与重试等能力。
+    """
+
     def __init__(
         self,
         max_downloads: int = 4,
@@ -63,6 +68,27 @@ class PDManager:
         out_dir: str = None,
         # threads
     ):
+        """
+        初始化下载管理器。
+        参数：
+        - max_downloads: 全局并发下载任务数上限
+        - timeout: 请求超时时间（秒）
+        - retry: 失败重试次数
+        - retry_wait: 重试之间的等待时间（秒）
+        - log_path: 日志输出路径或 stdout
+        - debug: 是否启用调试日志
+        - check_integrity: 合并后校验完整性（MD5）
+        - continue_download: 是否断点续传
+        - max_concurrent_downloads: 单URL内部并发分片数
+        - min_split_size: 自动切分最小分片大小（如“1M”）
+        - force_sequential: 是否强制顺序下载
+        - tmp_dir: 全局临时目录
+        - user_agent: 用户代理字符串或字典
+        - chunk_retry_speed: 低速阈值（B/s）低于则重启片段
+        - chunk_timeout: 片段请求的超时（秒）
+        - auto_file_renaming: 是否自动重命名避免覆盖
+        - out_dir: 默认输出目录
+        """
         self.max_downloads = max_downloads
         self.timeout = timeout
         self.chunk_timeout = chunk_timeout
@@ -119,6 +145,10 @@ class PDManager:
         self.parse_config()
 
     def parse_config(self):
+        """
+        解析并规范化管理器配置，设置日志、单位解析与并发限制。
+        注意：会把 `min_split_size` 与 `chunk_retry_speed` 转换为字节数。
+        """
         self._logger.remove()
         self._logger.add(
             lambda msg: self._console.print(Text.from_ansi(str(msg)), end="\n"),
@@ -164,6 +194,10 @@ class PDManager:
                 self.user_agent = {"User-Agent": self.user_agent}
 
     def parse_size(self, size_str: str) -> int:
+        """
+        将类似 '1M'、'256K' 或纯数字字符串解析为字节数。
+        返回 None 表示未设置。
+        """
         if size_str is None or size_str == "":
             return None
         size_str = str(size_str).strip().upper()
@@ -182,6 +216,11 @@ class PDManager:
             raise ValueError(f"Invalid size format: {size_str}")
 
     def add_urls(self, url_list: dict | list[str]):
+        """
+        批量添加下载任务。支持：
+        - dict: {url: {md5, file_name, dir_path, log_path}}
+        - list[str]: [url1, url2, ...]
+        """
         if type(url_list) == dict:
             for url, v in url_list.items():
                 assert type(v) == dict
@@ -199,6 +238,9 @@ class PDManager:
                 self.append(url, dir_path=self.out_dir if self.out_dir else os.getcwd())
 
     def load_input_file(self, input_file: str):
+        """
+        从文件中加载URL列表，支持 JSON / YAML / 纯文本（每行一个URL），并合并到任务队列。
+        """
         with open(input_file, "r") as f:
             content = f.read()
             try:
@@ -221,16 +263,25 @@ class PDManager:
         dir_path: str = os.getcwd(),
         log_path: str = None,
     ):
+        """
+        添加单个下载任务，指定保存目录/文件名/日志/校验等。
+        """
         self._urls[url] = PDManager.FileDownloader(
             self, url, dir_path, filename=file_name, md5=md5, log_path=log_path
         )
         self._logger.debug(f"Added URL: {url}")
 
     def pop(self, url: str):
+        """
+        从管理器的任务字典移除指定URL（若不存在则忽略）。
+        """
         self._urls.pop(url, None)
         self._logger.debug(f"Removed URL: {url}")
 
     async def wait(self, downloaders: list[asyncio.Task]):
+        """
+        等待至少一个下载任务完成，清理完成的任务并记录错误。
+        """
         done, pending = await asyncio.wait(
             downloaders, return_when=asyncio.FIRST_COMPLETED
         )
@@ -246,6 +297,15 @@ class PDManager:
             # self.pop(_url)
 
     async def start_download(self):
+        """
+        启动全局下载循环：在进度面板下，按 `max_downloads` 并发度调度各 URL 下载器。
+        当队列动态添加新任务时也会继续处理。
+        """
+        # >>> 全局调度循环说明
+        # 1. 遍历 `_urls`，以不超过 `max_downloads` 的并发度启动 `FileDownloader.start_download()`
+        # 2. 使用 `wait()` 在有任务完成后再补充新的任务
+        # 3. 进度面板 `self._progress` 负责渲染每个文件的进度与合并阶段
+        # <<<
         self._logger.debug(self)
         downloaders = []
         downloading = {}
@@ -272,12 +332,17 @@ class PDManager:
                 await asyncio.sleep(1)
 
     def urls(self) -> List[str]:
+        "返回当前待下载URL列表。"
         return list(self._urls.keys())
 
     def __str__(self):
         return f"PDManager(threads={self.max_downloads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
 
     class FileDownloader:
+        """
+        单URL下载器：负责获取头信息、构建分片链表、并发下载、合并与校验。
+        """
+
         def __init__(
             self,
             parent,
@@ -315,6 +380,10 @@ class PDManager:
             )
 
         async def parse_config(self):
+            """
+            解析下载器配置：计算日志路径、临时目录、拉取头信息与文件名、确定文件大小，
+            并构建或重建分片任务链表。
+            """
             sha = hashlib.sha256(self.url.encode("utf-8")).hexdigest()[:6]
             if self.log_path is None and self.parent.log_path is not None:
                 self.log_path = os.path.join(self.filepath, f".pdm.{sha}.log")
@@ -366,6 +435,13 @@ class PDManager:
             return f"FileDownloader(url={self.url}, filepath={self.filepath}, filename={self.filename}, md5={self.md5}, pdm_tmp={self.pdm_tmp}, file_size={self.file_size})\n{"\n".join(chunks)}"
 
         async def process_md5(self, md5):  # 处理传入的md5值
+            """
+            处理传入的 MD5 值：
+            - 文件路径：读取文件内容作为 MD5
+            - URL：请求获取文本作为 MD5
+            - 32位十六进制：直接使用
+            返回标准化的 MD5（小写）或 None。
+            """
             if md5 is None:
                 return None
             elif os.path.exists(md5):
@@ -391,6 +467,10 @@ class PDManager:
                 return None
 
         async def get_file_name(self) -> str:
+            """
+            根据响应头 `Content-Disposition` 或 URL 路径推断文件名，
+            当无法推断时以 URL hash 作为默认文件名。
+            """
             async with aiohttp.ClientSession() as session:
                 cd = self.header_info.get("Content-Disposition")
                 if cd:
@@ -408,6 +488,9 @@ class PDManager:
                 return fname
 
         async def get_headers(self) -> dict:
+            """
+            发送 HEAD 请求获取响应头；允许重定向，禁用内容压缩以便准确获取长度。
+            """
             async with aiohttp.ClientSession() as session:
                 async with session.head(
                     self.url,
@@ -423,6 +506,9 @@ class PDManager:
                         )
 
         async def get_url_file_size(self) -> int:
+            """
+            从已获取的响应头解析 `Content-Length`，未知返回 -1。
+            """
             if self.header_info is not None:
                 file_size = self.header_info.get("Content-Length")
             if file_size:
@@ -514,12 +600,22 @@ class PDManager:
             return root
 
         async def create_chunk(self) -> "PDManager.FileDownloader.Chunk" | None:
-            # 遍历chunk列表，先找到间隔最大的正在下载的chunk，然后在其间隙中创建新的chunk，间隔小于102400则返回None
+            """
+            在当前分片链表中寻找进度间隙最大的片段，按中点切分生成新片段以提升并发。
+            当最大可分间隙小于 `min_split_size` 时返回 None。
+            """
+            # >>> 间隙选择与切分策略
+            # - gap = chunk.end - chunk.size - chunk.start + 1 表示剩余待下载字节
+            # - new_start 取当前剩余与下一片段边界的中点，并对齐到 10KB
+            # - 调整链表：当前片段缩短为 [start, new_start-1]，新片段覆盖 [new_start, old_end]
+            # <<<
             async with self.lock:
                 max_gap = 0
-                target_chunk: "PDManager.FileDownloader.Chunk" = None
+                target_chunk: "PDManager.FileDownloader.Chunk" = (
+                    None  # 最大间隙目标片段
+                )
                 for chunk in self.chunk_root:
-                    gap = chunk.end - chunk.size - chunk.start + 1
+                    gap = chunk.end - chunk.size - chunk.start + 1  # 剩余待下载字节数
                     if gap > max_gap:
                         max_gap = gap
                         target_chunk = chunk
@@ -535,7 +631,9 @@ class PDManager:
                     )
                 ) // 2
                 if new_start // 10240:
-                    new_start -= new_start % 10240
+                    new_start -= (
+                        new_start % 10240
+                    )  # 对齐到10KB，提升服务器/内核处理效率
                 new_chunk = PDManager.FileDownloader.Chunk(
                     self,
                     new_start,
@@ -554,6 +652,10 @@ class PDManager:
             return new_chunk
 
         def creat_info(self):
+            """
+            初始化或校验 `.pdm` 元信息文件，确保断点续传的参数一致性；
+            不一致时清理并重建临时目录。
+            """
             if not self.parent.continue_download or not os.path.exists(
                 os.path.join(self.pdm_tmp, ".pdm")
             ):
@@ -593,6 +695,11 @@ class PDManager:
                 self._logger.error("Unknown error in creating .pdm file.")
 
         async def merge_chunks(self):
+            """
+            逐片合并到目标文件（先写临时文件 `.tmp` 再原子替换），
+            若目标文件存在且启用自动重命名，则生成递增后缀避免覆盖。
+            合并过程在进度条中展示总字节数。
+            """
             if os.path.exists(os.path.join(self.filepath, self.filename)):
                 index = 0
                 while True:
@@ -623,6 +730,9 @@ class PDManager:
             await asyncio.to_thread(shutil.rmtree, self.pdm_tmp, True)
 
         async def check_integrity(self):
+            """
+            可选的 MD5 完整性校验：对合并后的文件计算 MD5 与期望值比对。
+            """
             if self.parent.check_integrity:
                 if self.md5 is None:
                     self._logger.info(
@@ -650,6 +760,10 @@ class PDManager:
                     return False
 
         async def start_download(self, _iter=None):
+            """
+            包装整体下载流程：配置初始化 -> 并发分片下载 -> 合并 -> 校验。
+            失败时按 `retry` 次数递归重试。
+            """
             if _iter is None:
                 _iter = self.parent.retry
             try:
@@ -676,6 +790,15 @@ class PDManager:
                 raise Exception(f"Failed to download {self.url} after retries.")
 
         async def _start_download(self):
+            """
+            分片并发下载调度：控制同时进行的分片数不超过 `max_concurrent_downloads`。
+            依据进度动态创建新分片，直至无需再切分。
+            """
+            # >>> 进度与并发调度说明
+            # - `progress_run` 独立任务：未知大小时显示活动状态；已知大小时按合计字节更新进度
+            # - 初始遍历现有分片，填满并发窗口；随后循环：等待任一任务完成后尝试 `create_chunk()`
+            # - 当 `create_chunk()` 返回 None 表示无需进一步切分，最终等待所有任务完成
+            # <<<
             tasks = []
 
             async def progress_run():
@@ -742,7 +865,21 @@ class PDManager:
                 tasks.append(asyncio.create_task(new_chunk.download()))
             await asyncio.gather(*tasks, self.progress)
 
+        # >>> 分片链表说明
+        # 每个 `Chunk` 表示文件的一个字节区间（闭区间），以单向链表串联，
+        # 支持在下载过程中按剩余进度动态切分并插入新片段以提升并发度。
+        # 片段完成条件：已写入字节数 `size` 达到区间长度（end-start+1）。
+        # 对未知大小任务（end=None），响应结束即视为完成整个文件。
+        # <<<
         class Chunk:
+            """
+            文件分片节点：形成单向链表结构以表示按顺序的字节区间。
+            属性：
+            - start/end: 区间起止（闭区间），未知大小时 `end=None`
+            - size: 已写入的字节数（来自临时文件尺寸或运行中累计）
+            - forward/next: 前驱与后继片段指针
+            """
+
             def __init__(
                 self,
                 parent: PDManager.FileDownloader,
@@ -786,12 +923,15 @@ class PDManager:
                 return self.size + other
 
             def _is_complete(self) -> bool:
+                "判断片段是否已下载完整。"
                 return self.end is not None and self.size == self.end - self.start + 1
 
             def _needs_download(self) -> bool:
+                "判断片段是否仍需继续下载。"
                 return self.end is None or self.size < self.end - self.start + 1
 
             def _apply_range_header(self, headers: dict):
+                "根据当前片段进度设置 Range 头；未知大小时移除 Range。"
                 if self.end is not None:
                     headers["Range"] = f"bytes={self.start + self.size}-{self.end}"
                 else:
@@ -799,15 +939,22 @@ class PDManager:
                         headers.pop("Range")
 
             async def _stream_response(self, response, f) -> bool:
+                """
+                读取响应数据流并写入到临时分片文件：
+                - 控制写入不超过片段 `end`
+                - 统计瞬时速率，低于阈值时返回 True 以触发重启
+                - 线程安全地累计 `size`
+                返回：是否触发低速重启。
+                """
                 last_time = time.time()
-                pos = await f.tell()
+                pos = await f.tell()  # 已写入偏移，避免覆盖与越界
                 continue_flag = False
                 async for data in response.content.iter_chunked(10240):
                     if self.end is not None:
                         remaining = self.end - self.start + 1 - pos
                         if remaining <= 0:
                             break
-                        data = data[:remaining]
+                        data = data[:remaining]  # 限制写入长度到片段边界
                     await f.write(data)
                     async with self.parent.lock:
                         self.size += len(data)
@@ -818,12 +965,16 @@ class PDManager:
                             self.parent.parent.chunk_retry_speed
                             and speed < self.parent.parent.chunk_retry_speed
                         ):
-                            continue_flag = True
+                            continue_flag = True  # 低速触发重启标记
                         last_time = now
                     pos += len(data)
                 return continue_flag
 
             async def _split_incomplete(self):
+                """
+                将未完整的片段在当前进度处一分为二，以便继续并发下载。
+                当前片段成为前半段，新片段承接后半段并插入到链表中。
+                """
                 if self.size != self.end - self.start + 1:
                     self.parent._logger.warning(
                         f"Chunk not fully downloaded, splitting chunk: {self}"
@@ -845,6 +996,19 @@ class PDManager:
                         self.next = new_chunk
 
             async def download(self):
+                """
+                执行单片段下载的主循环：
+                - 外层重试次数由管理器控制
+                - 内层循环处理请求、写入与低速重启
+                - 对未知大小的任务，在响应结束后标记文件级完成
+                - 对已知大小的任务，必要时在结束处执行片段拆分
+                """
+                # >>> 分片下载流程概述
+                # 1) 复用 `ClientSession` 与单次打开的临时文件句柄
+                # 2) 若片段已完整则直接返回；否则构造 Range 并请求
+                # 3) 流式写入 + 速率监测；低速则短暂等待并重启
+                # 4) 已知大小：完成后返回；未知大小：响应结束即视为完成
+                # <<<
                 assert self.end is not None or self.size >= 0
                 headers = {}
                 file_mode = "ab" if os.path.exists(self.chunk_path) else "wb"

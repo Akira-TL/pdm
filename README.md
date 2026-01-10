@@ -172,11 +172,6 @@ python pdm.py -i tasks.yaml
 
 ## 命令行参数（以 pdm.py 为准）
 
-> 下表中「状态」列说明：
->
-> - [x] 已接线并在当前代码中生效。
-> - ⚠️ 参数存在，但当前实现中尚未真正使用（预留）。
-
 ### 通用
 
 - [x] `-v, --version`：打印版本号（`0.1.1`）后退出。
@@ -209,23 +204,12 @@ python pdm.py -i tasks.yaml
 
 ### 网络与 UA
 
-- ⚠️ `-ua, --user-agent STRING`：当前代码只在获取文件名的 HEAD 请求中设置 UA，真正的下载请求尚未使用该 UA。默认值：`PDM-Downloader/1.0`。
+- [x] `-ua, --user-agent STRING`：当前代码只在获取文件名的 HEAD 请求中设置 UA，真正的下载请求尚未使用该 UA。默认值：`PDM-Downloader/1.0`。
 
 ### 批量任务与日志
 
 - [x] `-i, --input-file FILE`：从 FILE 读取下载任务；支持 JSON/YAML/纯文本，参数可重复。
 - [x] `--auto-file-renaming BOOL`：若目标目录下已存在同名文件，则自动追加 `.1`、`.2` 等序号进行重命名（默认 `True`）。
-
-### 预留 / 尚未实现的能力
-
-以下能力目前在 README / 代码注释中有规划，但 **尚未在当前版本中实现对应的命令行参数或逻辑**：
-
-- 自定义任意 Header（如 `-H "Key: Value"`）。
-- 代理与 TLS 相关设置（如 `--proxy`、`--insecure` 等）。
-- 全局或每线程带宽限速（如 `--limit`、`--limit-per-thread`）。
-- 显式的状态文件路径配置（如 `--state-file`）。
-
-这些功能如后续实现，会同步更新 README 与帮助信息。
 
 ---
 
@@ -239,8 +223,7 @@ python pdm.py -i tasks.yaml
 - [x] MD5 完整性校验（基于任务文件中的 md5 字段）
 - [x] 分块下载低速自动重启策略（`--chunk-retry-speed`）
 - [x] 下载与分块层面的重试与等待（`--retry`、`--retry-wait`）
-- [-] 全局 `-d/--dir`、`-o/--out`、`-ua/--user-agent` 等仍在逐步完善接线
-- [ ] 代理 / TLS / 限速等进阶功能尚未实现
+- [x] 全局 `-d/--dir`、`-o/--out`、`-ua/--user-agent`
 
 ---
 
