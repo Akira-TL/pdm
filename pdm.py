@@ -56,7 +56,7 @@ class PDManager:
         min_split_size: str = "1M",
         force_sequential: bool = False,
         tmp_dir: str = None,
-        user_agent: dict = None,
+        user_agent: dict | str = None,
         chunk_retry_speed: str | int = None,
         chunk_timeout: int = 10,
         auto_file_renaming: bool = True,
@@ -157,6 +157,11 @@ class PDManager:
             self._logger.warning(
                 "threads are more than 32, may cause high resource usage. "
             )
+        if isinstance(self.user_agent, str):
+            try:
+                self.user_agent = json.loads(self.user_agent)
+            except Exception:
+                self.user_agent = {"User-Agent": self.user_agent}
 
     def parse_size(self, size_str: str) -> int:
         if size_str is None or size_str == "":
@@ -1090,6 +1095,7 @@ if __name__ == "__main__":
         chunk_timeout=args.chunk_timeout,
         auto_file_renaming=args.no_auto_file_renaming,
         out_dir=args.dir,
+        user_agent=args.user_agent,
     )
     if len(args.urls) == 1 and args.out is not None:
         pdm.append(
