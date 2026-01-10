@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdm"
+version = "0.1.1"
+description = "Parallel segmented downloader inspired by IDM, with CLI and Python API."
+readme = "README.md"
+authors = [{ name = "Akira_TL" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+  "aiohttp>=3.8",
+  "aiofiles>=23.1",
+  "yarl>=1.9",
+  "rich>=13.0",
+  "loguru>=0.7",
+  "PyYAML>=6.0",
+]
+keywords = ["downloader", "parallel", "segments", "cli"]
+
+[project.urls]
+Homepage = "https://github.com/Akira-TL/pdm"
+Repository = "https://github.com/Akira-TL/pdm.git"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pdm*"]
+
+[project.scripts]
+pdm = "pdm.cli:main"

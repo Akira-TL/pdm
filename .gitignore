@@ -4,3 +4,7 @@ download.log
 .pdm*
 *test*
 .vscode/launch.json
+*.egg-info/
+*.dist-info/
+build/
+dist/
