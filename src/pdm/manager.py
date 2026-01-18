@@ -254,21 +254,31 @@ class PDManager:
     async def wait(self, downloaders: list[asyncio.Task] = None):
         if downloaders is None:
             downloaders = self._downloaders
-        done, pending = await asyncio.wait(
-            downloaders, return_when=asyncio.FIRST_COMPLETED
-        )
-        for d in done:
+        while downloaders:
             try:
-                _url = d.result()
-            except asyncio.CancelledError:
-                pass
+                done, pending = await asyncio.wait(
+                    downloaders, return_when=asyncio.FIRST_COMPLETED
+                )
             except Exception as e:
-                self._logger.error(f"task error: {e}")
+                self._logger.error(f"wait error: {e}")
                 self._logger.error(traceback.format_exc())
-            downloaders.remove(d)
+                return
+            for d in done:
+                try:
+                    _url = d.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self._logger.error(f"task error: {e}")
+                    self._logger.error(traceback.format_exc())
+                downloaders.remove(d)
 
     async def download(self):
-        self._downloader_main = asyncio.create_task(self._start_download())
+        self._downloader_main = asyncio.create_task(self._download_once())
+        try:
+            await self._downloader_main
+        finally:
+            self._downloader_main = None
 
     async def _download_once(self):
         self._logger.debug(self)
@@ -276,7 +286,7 @@ class PDManager:
         downloading = {}
         if self._urls:
             with self._progress:
-                while self._downloaders or self._urls:
+                while self._urls:
                     async with self._urls_lock:
                         url, download_entity = self._urls.popitem()
                     if url in downloading:
@@ -297,30 +307,44 @@ class PDManager:
                 await asyncio.sleep(1)
 
     async def _start_download(self):
+        self._logger.debug(self)
+        self._downloaders = []
+        downloading = {}
         while True:
-            self._logger.debug(self)
-            self._downloaders = []
-            downloading = {}
-            with self._progress:
-                while self._urls:
-                    async with self._urls_lock:
-                        url, download_entity = self._urls.popitem()
-                    if url in downloading:
-                        continue
-                    downloading[url] = True
-                    assert isinstance(download_entity, PDManager.FileDownloader)
-                    if len(self._downloaders) < self.max_downloads:
-                        self._downloaders.append(
-                            asyncio.create_task(download_entity.start_download())
-                        )
-                    else:
-                        await self.wait(self._downloaders)
-                        self._downloaders.append(
-                            asyncio.create_task(download_entity.start_download())
-                        )
-                    await asyncio.sleep(0.1)
-                    if not self._urls:
-                        break
+            if self._urls:
+                with self._progress or self._downloaders:
+                    while self._urls:
+                        async with self._urls_lock:
+                            url, download_entity = self._urls.popitem()
+                        if url in downloading:
+                            continue
+                        downloading[url] = True
+                        assert isinstance(download_entity, PDManager.FileDownloader)
+                        if len(self._downloaders) < self.max_downloads:
+                            self._downloaders.append(
+                                asyncio.create_task(download_entity.start_download())
+                            )
+                        else:
+                            # await self.wait(self._downloaders)
+                            done, pending = await asyncio.wait(
+                                self._downloaders, return_when=asyncio.FIRST_COMPLETED
+                            )
+                            for d in done:
+                                try:
+                                    _url = d.result()
+                                except asyncio.CancelledError:
+                                    pass
+                                except Exception as e:
+                                    self._logger.error(f"task error: {e}")
+                                    self._logger.error(traceback.format_exc())
+                                finally:
+                                    self._downloaders.remove(d)
+                            self._downloaders.append(
+                                asyncio.create_task(download_entity.start_download())
+                            )
+                        await asyncio.sleep(0.1)
+                        if not self._urls:
+                            break
             await asyncio.sleep(1)
 
     async def start_download(self):  # 持续下载
@@ -419,7 +443,7 @@ class PDManager:
                 if self.md5.find("*") == 0:
                     self.md5 = self.md5.replace("*", self.url)
                 self.md5 = await self.process_md5(self.md5)
-                self._logger
+                # self._logger
             if self.pdm_tmp is None and self.parent.tmp_dir is not None:
                 self.pdm_tmp = os.path.join(self.parent.tmp_dir, f".pdm.{sha}")
             elif self.pdm_tmp is None and self.parent.tmp_dir is None:
@@ -673,10 +697,14 @@ class PDManager:
                         break
             dest_path = os.path.join(self.filepath, self.filename)
             temp_path = dest_path + ".tmp"
-            task = self.parent._progress.add_task(
+            self.parent._progress.update(
+                self.task,
                 description=f"Merging {self.filename}",
                 total=self.file_size if self.file_size > 0 else sum(self.chunk_root),
+                completed=0,
             )
+            last_time = time.time()
+            merge_chunk = 0
             async with aiofiles.open(temp_path, "wb") as outfile:
                 for chunk in self.chunk_root:
                     async with aiofiles.open(chunk.chunk_path, "rb") as infile:
@@ -684,9 +712,17 @@ class PDManager:
                             data = await infile.read(64 * 1024)
                             if not data:
                                 break
-                            self.parent._progress.update(task, advance=len(data))
                             await outfile.write(data)
-            self.parent._progress.stop_task(task)
+                            if last_time + 1 < time.time():
+                                self.parent._progress.update(
+                                    self.task, completed=merge_chunk + len(data)
+                                )
+                                last_time = time.time()
+                                merge_chunk = 0
+                            else:
+                                merge_chunk += len(data)
+            # self.parent._progress.stop_task(self.task)
+            self.parent._progress.remove_task(self.task)
 
             await asyncio.to_thread(os.replace, temp_path, dest_path)
             await asyncio.to_thread(shutil.rmtree, self.pdm_tmp, True)
@@ -694,7 +730,7 @@ class PDManager:
         async def check_integrity(self):
             if self.parent.check_integrity:
                 if self.md5 is None:
-                    self._logger.info(
+                    self.parent._logger.info(
                         f"{self.filename} No md5 provided, skipping integrity check."
                     )
                     return True
@@ -713,7 +749,7 @@ class PDManager:
                     )
                     return True
                 else:
-                    self._logger.error(
+                    self.parent._logger.error(
                         f"{self.filename}MD5 checksum does not match! Expected: {self.md5}, Got: {file_md5}"
                     )
                     return False
@@ -728,8 +764,9 @@ class PDManager:
                     and os.path.exists(os.path.join(self.filepath, self.filename))
                     and not self.parent.auto_file_renaming
                 ):
-                    await self.parent.pop(self.url)
+                    await self.parent.apop(self.url)
                     return self.url
+                self.task = None
                 await self._start_download()
                 await self.merge_chunks()
                 await self.check_integrity()
@@ -738,7 +775,7 @@ class PDManager:
                 self._logger.debug(traceback.format_exc())
                 await asyncio.sleep(self.parent.retry_wait)
                 await self.start_download(_iter=_iter - 1) if _iter > 0 else None
-            await self.parent.pop(self.url)
+            # await self.parent.apop(self.url)
             if self._done:
                 return self.url
             else:
@@ -749,35 +786,37 @@ class PDManager:
 
             async def progress_run():
                 if self.file_size < 0:
-                    task = self.parent._progress.add_task(
+                    self.task = self.parent._progress.add_task(
                         f"Downloading {self.filename}", total=None
                     )
                     while not self._downloaded:
                         await asyncio.sleep(1)
                 else:
-                    task = self.parent._progress.add_task(
+                    self.task = self.parent._progress.add_task(
                         f"Downloading {self.filename}", total=self.file_size
                     )
                     while self.file_size > sum(self.chunk_root):
                         self.parent._progress.update(
-                            task, completed=sum(self.chunk_root)
+                            self.task, completed=sum(self.chunk_root)
                         )
                         await asyncio.sleep(1)
-                    self.parent._progress.update(task, completed=sum(self.chunk_root))
-                    self._logger.info(f"Completed downloading {self.filename}")
-                self.parent._progress.stop_task(task)
-                self.parent._progress.remove_task(task)
+                    self.parent._progress.update(
+                        self.task, completed=sum(self.chunk_root)
+                    )
+                    self.parent._logger.info(f"Completed downloading {self.filename}")
+                # self.parent._progress.stop_task(self.task)
+                # self.parent._progress.remove_task(self.task)
 
             self.progress = asyncio.create_task(progress_run())
 
             for chunk in self.chunk_root:
                 if tasks.__len__() < self.parent.max_concurrent_downloads:
-                    self._logger.debug(
+                    self.parent._logger.debug(
                         f"tasks number {tasks.__len__()} < max_concurrent_downloads {self.parent.max_concurrent_downloads}, creating new task."
                     )
                     tasks.append(asyncio.create_task(chunk.download()))
                 else:
-                    self._logger.debug(
+                    self.parent._logger.debug(
                         f"tasks number {tasks.__len__()} >= max_concurrent_downloads {self.parent.max_concurrent_downloads}, wait for a task to complete before creating new task."
                     )
                     done, pending = await asyncio.wait(
@@ -788,7 +827,7 @@ class PDManager:
                     tasks.append(asyncio.create_task(chunk.download()))
             while True:
                 if tasks.__len__() < self.parent.max_concurrent_downloads:
-                    self._logger.debug(
+                    self.parent._logger.debug(
                         f"tasks number {tasks.__len__()} < max_concurrent_downloads {self.parent.max_concurrent_downloads}, creating new task."
                     )
                     new_chunk = await self.create_chunk()
@@ -796,7 +835,7 @@ class PDManager:
                         break
                     tasks.append(asyncio.create_task(new_chunk.download()))
                     continue
-                self._logger.debug(
+                self.parent._logger.debug(
                     f"tasks number {tasks.__len__()} >= max_concurrent_downloads {self.parent.max_concurrent_downloads}, wait for a task to complete before creating new task."
                 )
                 done, pending = await asyncio.wait(
@@ -916,7 +955,9 @@ class PDManager:
                 headers = {}
                 file_mode = "ab" if os.path.exists(self.chunk_path) else "wb"
                 async with (
-                    aiohttp.ClientSession() as session,
+                    aiohttp.ClientSession(
+                        timeout=aiohttp.ClientTimeout(sock_read=30)
+                    ) as session,
                     aiofiles.open(self.chunk_path, file_mode) as f,
                 ):
                     for _ in range(self.parent.parent.retry):

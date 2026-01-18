@@ -9,3 +9,4 @@ download.log
 build/
 dist/
 _pdm.py
+pdm/
