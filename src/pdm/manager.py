@@ -5,6 +5,7 @@
 保留原有行为与日志/并发策略；CLI 部分在 cli.py。
 """
 
+import random
 import re
 import os
 import sys
@@ -271,7 +272,7 @@ class PDManager:
                 except Exception as e:
                     self._logger.error(f"task error: {e}")
                     self._logger.error(traceback.format_exc())
-                downloaders.remove(d)
+            downloaders = pending
 
     async def download(self):
         self._downloader_main = asyncio.create_task(self._download_once())
@@ -715,7 +716,7 @@ class PDManager:
                             await outfile.write(data)
                             if last_time + 1 < time.time():
                                 self.parent._progress.update(
-                                    self.task, completed=merge_chunk + len(data)
+                                    self.task, advance=merge_chunk + len(data)
                                 )
                                 last_time = time.time()
                                 merge_chunk = 0
@@ -899,7 +900,10 @@ class PDManager:
 
             def _apply_range_header(self, headers: dict):
                 if self.end is not None:
-                    headers["Range"] = f"bytes={self.start + self.size}-{self.end}"
+                    if self.start + self.size <= self.end:
+                        headers["Range"] = f"bytes={self.start + self.size}-{self.end}"
+                    else:
+                        headers["break"] = True
                 else:
                     if "Range" in headers:
                         headers.pop("Range")
@@ -931,7 +935,7 @@ class PDManager:
 
             async def _split_incomplete(self):
                 if self.size != self.end - self.start + 1:
-                    self.parent._logger.warning(
+                    self.parent._logger.debug(
                         f"Chunk not fully downloaded, splitting chunk: {self}"
                     )
                     async with self.parent.lock:
@@ -952,7 +956,7 @@ class PDManager:
 
             async def download(self):
                 assert self.end is not None or self.size >= 0
-                headers = {}
+                headers = {}  # TODO 添加其他必要的headers
                 file_mode = "ab" if os.path.exists(self.chunk_path) else "wb"
                 async with (
                     aiohttp.ClientSession(
@@ -966,6 +970,8 @@ class PDManager:
                         while True:
                             try:
                                 self._apply_range_header(headers)
+                                if headers.get("break"):
+                                    break
                                 self.parent._logger.debug(
                                     f"Downloading chunk: {self}, with headers: {headers}"
                                 )
@@ -986,13 +992,30 @@ class PDManager:
                                                 self.parent._logger.debug(
                                                     "speed is low restarting..."
                                                 )
-                                                break
+                                                continue
                             except aiohttp.client_exceptions.ClientPayloadError:
-                                await asyncio.sleep(self.parent.parent.retry_wait)
+                                await asyncio.sleep(
+                                    self.parent.parent.retry_wait + random.random() * 5
+                                )
+                            except asyncio.TimeoutError:
+                                self.parent._logger.debug(
+                                    f"Timeout downloading chunk {self}, retrying..."
+                                )
+                                await asyncio.sleep(
+                                    self.parent.parent.retry_wait + random.random() * 5
+                                )
+                            except ConnectionResetError:
+                                self.parent._logger.debug(
+                                    f"Connection reset downloading chunk {self}, retrying..."
+                                )
+                                await asyncio.sleep(
+                                    self.parent.parent.retry_wait + random.random() * 5
+                                )
                             except Exception as e:
                                 self.parent._logger.debug(
                                     f"Error downloading chunk {self}: {e}"
                                 )
+                                # traceback.print_exc()
                                 await asyncio.sleep(self.parent.parent.retry_wait)
                                 break
                             if self._is_complete():
