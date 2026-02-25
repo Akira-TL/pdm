@@ -20,7 +20,7 @@ def main(argv=None):
         "-v",
         "--version",
         action="version",
-        version=f"PythonDownloadManager(PDM) version {version}",
+        version=f"PythonDownloadManager(PDMAN) version {version}",
         help="Print the version number and exit.",
     )
     parser.add_argument(
@@ -151,7 +151,7 @@ def main(argv=None):
         "-ua",
         "--user-agent",
         type=str,
-        default="PDM-Downloader/1.0",
+        default="PDMAN-Downloader/1.0",
         help="The User-Agent string to use for HTTP requests.",
     )
     parser.add_argument(

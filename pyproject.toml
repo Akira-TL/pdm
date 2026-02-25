@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pdm"
+name = "pdman"
 version = "0.1.3"
 description = "Parallel segmented downloader inspired by IDM, with CLI and Python API."
 readme = "README.md"
@@ -21,15 +21,15 @@ dependencies = [
 keywords = ["downloader", "parallel", "segments", "cli"]
 
 [project.urls]
-Homepage = "https://github.com/Akira-TL/pdm"
-Repository = "https://github.com/Akira-TL/pdm.git"
+Homepage = "https://github.com/Akira-TL/pdman"
+Repository = "https://github.com/Akira-TL/pdman.git"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["pdm*"]
+include = ["pdman*"]
 
 [project.scripts]
-pdm = "pdm.cli:main"
+pdman = "pdman.cli:main"
