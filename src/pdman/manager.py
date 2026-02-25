@@ -413,13 +413,11 @@ class Manager:
         else:
             self._downloader_main = asyncio.create_task(self._loop())
 
-    async def stop_loop(self) -> None:  # 停止持续下载
+    def stop_loop(self) -> None:  # 停止持续下载
         """
         停止下载循环。
         """
-        if self._downloader_main is None:
-            self._logger.warning("Download loop is not running.")
-        else:
+        if self._downloader_main is not None:
             self._downloader_main.cancel()
             self._downloader_main = None
 
@@ -435,7 +433,7 @@ class Manager:
         return f"Manager(threads={self.max_downloads}, timeout={self.timeout}, retry={self.retry}, debug={self.debug}, continue_download={self.continue_download}, max_concurrent_downloads={self.max_concurrent_downloads}, min_split_size={self.min_split_size})"
 
     def __del__(self):
-        asyncio.run(self.stop_loop())
+        self.stop_loop()
 
     # 支持with语法
     async def __aenter__(self):
