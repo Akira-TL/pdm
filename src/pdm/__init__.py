@@ -1,3 +1,4 @@
 from .manager import Manager
 
-__all__ = ["Manager"]
+manager = Manager()
+__all__ = ["Manager", "manager"]
