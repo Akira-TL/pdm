@@ -61,7 +61,7 @@ class Downloader:
     async def parse_config(self):
         sha = hashlib.sha256(self.url.encode("utf-8")).hexdigest()[:6]
         if self.log_path is None and self.parent.log_path is not None:
-            self.log_path = os.path.join(self.filepath, f".pdm.{sha}.log")
+            self.log_path = os.path.join(self.filepath, f".pdman.{sha}.log")
         self._logger.remove()
         self._logger.add(
             lambda msg: self.parent._console.print(Text.from_ansi(str(msg)), end="\n"),
@@ -84,11 +84,9 @@ class Downloader:
             self.md5 = await self.process_md5(self.md5)
             # self._logger
         if self.pdm_tmp is None and self.parent.tmp_dir is not None:
-            self.pdm_tmp = os.path.join(self.parent.tmp_dir, f".pdm.{sha}")
+            self.pdm_tmp = os.path.join(self.parent.tmp_dir, f".pdman.{sha}")
         elif self.pdm_tmp is None and self.parent.tmp_dir is None:
-            self.pdm_tmp = os.path.join(self.filepath, f".pdm.{sha}")
-        else:
-            self.pdm_tmp = os.path.join(self.pdm_tmp, f".pdm.{sha}")
+            self.pdm_tmp = os.path.join(self.filepath, f".pdman.{sha}")
         os.makedirs(self.pdm_tmp, exist_ok=True)
         self.header_info = await self.get_headers()
         self.filename = self.filename if self.filename else await self.get_file_name()

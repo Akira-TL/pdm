@@ -40,7 +40,7 @@ def main(argv=None):
         "-d",
         "--dir",
         type=str,
-        default=os.path.join(os.getcwd(), "pdm"),
+        default=os.path.join(os.getcwd(), "pdman"),
         help="The directory to store the downloaded file.",
     )
     parser.add_argument(
@@ -168,7 +168,7 @@ def main(argv=None):
     if args.force_sequential and args.out is not None:
         args.out = None
 
-    pdm = Manager(
+    pdman = Manager(
         max_downloads=args.max_downloads,
         log_path=args.log,
         debug=args.debug,
@@ -189,18 +189,18 @@ def main(argv=None):
     )
 
     if args.urls and len(args.urls) == 1 and args.out is not None:
-        pdm.append(args.urls[0], file_name=args.out)
+        pdman.append(args.urls[0], file_name=args.out)
     else:
         if args.out is not None:
             pass  # ignore --out when multiple urls
-        pdm.add_urls(args.urls or [])
+        pdman.add_urls(args.urls or [])
 
     if args.input_file:
         for file in args.input_file:
             if os.path.exists(file):
-                pdm.load_input_file(file)
+                pdman.load_input_file(file)
 
-    asyncio.run(pdm.download())
+    asyncio.run(pdman.download())
 
 
 if __name__ == "__main__":

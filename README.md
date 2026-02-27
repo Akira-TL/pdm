@@ -1,4 +1,4 @@
-# PDM — 模拟 IDM 下载流程的 Python 工具
+# pdman — 模拟 IDM 下载流程的 Python 工具
 
 一个使用 Python 实现的异步多段下载器，支持多连接分块下载、断点续传、下载进度展示、低速分片自动重启、批量任务等功能。
 
@@ -7,7 +7,7 @@
 ## 功能概览
 
 - 多连接分块下载：同一 URL 通过 Range 头拆分为多个分块并发下载。
-- 断点续传：每个任务使用 `.pdm.<sha>` 目录保存分块和 `.pdm` 元信息，配合 `--continue` 恢复下载。
+- 断点续传：每个任务使用 `.pdman.<sha>` 目录保存分块和 `.pdman` 元信息，配合 `--continue` 恢复下载。
 - 下载进度展示：使用 rich 展示每个文件的进度条、速度、已用时间和剩余时间。
 - 失败重试：支持整体任务重试（`--retry`）和分块级重试 + 低速重启（`--chunk-retry-speed`）。
 - 并发控制：
@@ -16,7 +16,7 @@
   - `--force-sequential` 强制单 URL 顺序下载（相当于将 `max_concurrent_downloads` 设为 1）。
 - 日志：
   - 全局日志输出到终端或指定文件；
-  - 每个 URL 额外有一个独立的 `.pdm.<sha>.log` 日志（位于对应下载目录内）。
+  - 每个 URL 额外有一个独立的 `.pdman.<sha>.log` 日志（位于对应下载目录内）。
 - 完整性校验（MD5）：
   - 若任务中提供 `md5` 字段并启用 `--check-integrity`，下载完成后会对合并后的文件做 MD5 校验。
   - `md5` 可为 32 位 MD5 字符串、本地文件路径或一个返回 MD5 字符串的 URL。
@@ -28,7 +28,7 @@
 
 ```bash
 pip install -r requirements.txt
-pip install git+https://github.com/Akira-TL/pdm.git
+pip install git+https://github.com/Akira-TL/pdman.git
 ```
 
 ---
@@ -38,7 +38,7 @@ pip install git+https://github.com/Akira-TL/pdm.git
 ### 1. 单 URL 下载
 
 ```bash
-pdm "https://example.com/file.bin"
+pdman "https://example.com/file.bin"
 ```
 
 行为说明：
@@ -46,22 +46,22 @@ pdm "https://example.com/file.bin"
 - 输出目录：默认当前工作目录。
 - 文件名：优先使用服务器返回的 `Content-Disposition` 中的 `filename`；否则取 URL 路径末尾；若无法获取则使用 URL 的哈希值生成一个 `.dat` 文件名。
 - 分块与临时文件：
-  - 会在目标目录下创建一个 `.pdm.<sha>` 目录（`<sha>` 为 URL 的短哈希），
-  - 其中保存所有分块文件以及一个 `.pdm` 元信息文件。
+  - 会在目标目录下创建一个 `.pdman.<sha>` 目录（`<sha>` 为 URL 的短哈希），
+  - 其中保存所有分块文件以及一个 `.pdman` 元信息文件。
 
-下载完成后，分块会被合并为最终文件，`.pdm.<sha>` 目录会被删除。
+下载完成后，分块会被合并为最终文件，`.pdman.<sha>` 目录会被删除。
 
 ### 2. 断点续传
 
 按下 Ctrl+C 或进程异常结束后，可以使用 `--continue` 继续下载：
 
 ```bash
-python pdm.py --continue "https://example.com/file.bin"
+pdman --continue "https://example.com/file.bin"
 ```
 
 行为：
 
-- 若对应的 `.pdm.<sha>` 目录和 `.pdm` 元数据存在且信息匹配（URL、文件名、文件大小、MD5 等），则会在现有分块基础上继续下载。
+- 若对应的 `.pdman.<sha>` 目录和 `.pdman` 元数据存在且信息匹配（URL、文件名、文件大小、MD5 等），则会在现有分块基础上继续下载。
 - 如果元数据与当前任务不一致，则会清空该临时目录并重新开始。
 
 ### 3. 批量下载
@@ -80,7 +80,7 @@ https://example.com/b.zip
 执行：
 
 ```bash
-python pdm.py -i urls.txt
+pdman -i urls.txt
 ```
 
 每个 URL 会使用当前工作目录作为下载目录，文件名按前文规则自动推断。
@@ -105,7 +105,7 @@ JSON 结构为：
 ```
 
 ```bash
-pdm -i tasks.json
+pdman -i tasks.json
 ```
 
 字段说明：
@@ -137,7 +137,7 @@ https://example.com/b.zip:
 执行：
 
 ```bash
-pdm -i tasks.yaml
+pdman -i tasks.yaml
 ```
 
 ---
