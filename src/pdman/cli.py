@@ -11,7 +11,7 @@ import argparse
 import asyncio
 from .manager import Manager
 
-version = "0.2.0"
+version = "0.2.1"
 
 
 def main(argv=None):
