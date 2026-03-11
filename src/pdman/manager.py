@@ -384,7 +384,7 @@ class Manager:
                     continue
                 downloading[url] = True
                 assert isinstance(download_entity, Downloader)
-                if len(self._downloaders) < self.max_downloads:
+                if len(self._downloaders) <= self.max_downloads:
                     self._downloaders.append(
                         asyncio.create_task(download_entity.start_download())
                     )
@@ -399,7 +399,7 @@ class Manager:
 
     async def _loop(self) -> None:
         self._logger.debug(self)
-        downloading = {} # 存储下载历史记录，避免重复下载
+        downloading = {}  # 存储下载历史记录，避免重复下载
         while True:
             await self._download_once(downloading)
             await asyncio.sleep(1)
